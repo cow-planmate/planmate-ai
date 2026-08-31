@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 설계/계획 문서 (개인 작업용, 저장소 미추적 — Backend-v2/Community 컨벤션과 동일)
+project_ai/
