@@ -1,7 +1,7 @@
 """`search_places` — 후보 장소 검색 (그룹 A/B/C/E/F를 한 SQL로).
 
 설계: `project_ai/05 §8`. LLM 은 파라미터만, 여기서 동적 SQL 조립.
-- B 코드필터  : category → content_type_id, region → ldong_regn_cd, subtype → lclsSystm
+- B 코드필터  : category → content_type_id, region → ldong_regn_cd, signgu → ldong_signgu_cd(선택, 단계적 스코프), subtype → lclsSystm
 - C 플래그    : amenities → place_intro_* 컬럼
 - A 의미검색  : query → gemini.embed_query → ORDER BY embedding <=> qvec
 - E 거리      : near/anchor_xy → ORDER BY 좌표거리
@@ -90,6 +90,7 @@ def search_places(
     name: str | None = None,
     category: str | None = None,
     region: str | list[str] | None = None,
+    signgu: list[str] | None = None,   # 시군구 코드 (ai_place_v.ldong_signgu_cd, 3자리). 있으면 그 안으로 좁힘
     subtype: str | None = None,
     amenities: list[str] | None = None,
     query: str | None = None,
@@ -123,6 +124,11 @@ def search_places(
         p["regns"] = regn_codes
     elif rnote == "unresolved" and region:
         return {"places": [], "total": 0, "notes": {"region": "unresolved"}}
+
+    # --- signgu (선택): 이미 코드라 리졸브 없음. 단계적 스코프 — 있으면 시군구까지 좁힘 ---
+    if signgu:
+        where.append("l.ldong_signgu_cd = ANY(%(signgu)s)")
+        p["signgu"] = [str(s) for s in signgu]
 
     if exclude_ids:
         where.append("l.content_id <> ALL(%(excl)s)")

@@ -32,6 +32,23 @@ def test_subtype_rank_puts_cafes_first():
     assert len(r["places"]) == 8
 
 
+def test_signgu_narrows_scope():
+    wide = search_places(category="restaurant", region="부산", limit=50)
+    narrow = search_places(category="restaurant", region="부산", signgu=["710"], limit=50)
+    assert narrow["total"] < wide["total"]
+    assert narrow["total"] >= 1
+    from app.db import query as dbq
+    exp = dbq("SELECT count(*) c FROM ai_place_v "
+              "WHERE ldong_regn_cd='26' AND ldong_signgu_cd='710' AND content_type_id='39'")[0]["c"]
+    assert narrow["total"] == exp
+
+
+def test_signgu_bogus_code_empty():
+    r = search_places(category="restaurant", region="부산", signgu=["999"], limit=5)
+    assert r["places"] == [] and r["total"] == 0
+    assert r["notes"] == {}          # signgu 는 코드라 "unresolved" 아님, 그냥 0건
+
+
 def test_subtype_strict_filters():
     loose = search_places(category="restaurant", region="부산", subtype="중식", limit=50)
     strict = search_places(category="restaurant", region="부산", subtype="중식",
