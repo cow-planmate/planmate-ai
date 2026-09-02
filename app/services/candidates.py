@@ -252,7 +252,8 @@ def _run(where, joins, order, p, limit, category):
 
     order_sql = ", ".join(order + ["md5(l.content_id || %(seed)s)"])
     sql = f"""
-        SELECT l.content_id, l.title, l.content_type_id, l.addr1, l.mapx, l.mapy,
+        SELECT l.content_id, l.title, l.content_type_id, l.cpyrht_div_cd,
+               l.addr1, l.mapx, l.mapy,
                left(l.overview, 300) AS overview, l.thumbnail,
                count(*) OVER() AS _total{dsel}
         FROM ai_place_v l
@@ -272,6 +273,8 @@ def _pack(rows, notes, category, anchor_xy):
             "content_id": r["content_id"],
             "title": r["title"],
             "category": _CTYPE_CAT.get(r["content_type_id"]),
+            "content_type_id": r["content_type_id"],          # raw — v2 placeContentTypeId (attraction 12/14 구분)
+            "copyright_div_cd": r["cpyrht_div_cd"] or "",      # v2 placeCopyrightDivCd
             "addr1": r["addr1"] or "",
             "mapx": float(r["mapx"]) if r["mapx"] is not None else None,
             "mapy": float(r["mapy"]) if r["mapy"] is not None else None,

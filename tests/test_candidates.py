@@ -19,6 +19,8 @@ def test_structural_restaurant_region():
     assert r["total"] > 100  # 부산 음식점 519
     for p in r["places"]:
         assert p["category"] == "restaurant"
+        assert p["content_type_id"] == "39"          # raw — v2 placeContentTypeId
+        assert "copyright_div_cd" in p               # v2 placeCopyrightDivCd (빈 문자열 허용)
         assert "부산" in p["addr1"]
 
 

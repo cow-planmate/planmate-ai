@@ -17,7 +17,9 @@ SELECT
     l.lcls_systm3,
     c.overview,
     l.firstimage2 AS thumbnail,
-    e.embedding
+    e.embedding,
+    l.cpyrht_div_cd                    -- VARCHAR(10): 저작권 구분 코드 → 블록 저장 시 v2 placeCopyrightDivCd
+                                       --   (CREATE OR REPLACE VIEW 는 컬럼 append 만 가능 → 맨 끝)
 FROM place_list l
 JOIN place_common c USING (content_id)
 LEFT JOIN place_embedding e USING (content_id);   -- 임베딩 없는 장소도 노출 (구조 필터만 하는 쿼리용)
