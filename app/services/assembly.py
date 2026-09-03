@@ -193,6 +193,9 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
     if kind == "createBlock":
         if not (op.place_id and op.date and op.block_start_time and op.block_end_time and op.block_category):
             return _drop(notes, f"createBlock: 필수 필드 누락 {op.model_dump(exclude_none=True)}")
+        if any(b.date == op.date and b.block_start_time == op.block_start_time for b in blocks):
+            # 그 슬롯 이미 점유 — v2 (date, blockStartTime) 유니크. 추론 안 함 → drop (10 §3)
+            return _drop(notes, f"createBlock: ({op.date}, {op.block_start_time}) 이미 블록 있음 — 무시")
         h = hydrate_places([op.place_id]).get(op.place_id)
         if not h:
             return _drop(notes, f"createBlock: contentId {op.place_id} 캐시에 없음")
@@ -214,6 +217,7 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
         b = _resolve_target(op.target, blocks, notes)
         if b is None:
             return
+        cat_from_place = False
         if op.place_id and op.place_id != b.place_id:
             h = hydrate_places([op.place_id]).get(op.place_id)
             if not h:
@@ -227,6 +231,7 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
             b.latitude = h["latitude"]
             b.longitude = h["longitude"]
             b.block_category = CTYPE_TO_CATEGORY.get(h["place_content_type_id"], b.block_category)
+            cat_from_place = True   # content_type 역유도(C-6) 가 우선 — 아래 op.block_category 로 안 덮음
         if op.block_start_time:
             b.block_start_time = op.block_start_time
         if op.block_end_time:
@@ -234,7 +239,7 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
         if op.date:
             b.date = op.date
             b.time_table_id = None   # 다른 날 → v2 가 date 로 재연결
-        if op.block_category:
+        if op.block_category and not cat_from_place:
             b.block_category = op.block_category
 
     elif kind == "deleteBlock":
@@ -247,6 +252,9 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
     elif kind == "createTimeTable":
         if not (op.date and op.time_table_start_time and op.time_table_end_time):
             return _drop(notes, "createTimeTable: 필수 필드 누락")
+        if any(t.date == op.date for t in timetables):
+            # 그 날 타임테이블 이미 존재 — v2 TimeTable.date 유니크. 창 조정은 updateTimeTable.
+            return _drop(notes, f"createTimeTable: {op.date} 이미 있음 — 무시 (창 조정은 updateTimeTable)")
         timetables.append(Timetable(
             time_table_id=None, date=op.date,
             time_table_start_time=op.time_table_start_time,
@@ -293,9 +301,12 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
         if len(scoped) < 2:
             return
         reordered = _resequence([b.model_dump(by_alias=True) for b in scoped])
-        by_key = {(b["date"], b.get("blockId")): b for b in reordered}
+        # 매칭 키 = (date, blockStartTime). blockId 로 하면 프리뷰 새 블록(전부 None)이
+        # 한 키로 뭉개짐. 하루 안 시각은 유니크(v2 제약)라 안전. resequence 는 시각 자리
+        # 고정 + 장소만 재배치 → 각 자리(시각)에 온 장소 필드를 원본 블록에 복사.
+        by_key = {(b["date"], b["blockStartTime"]): b for b in reordered}
         for b in scoped:
-            r = by_key.get((b.date, b.block_id))
+            r = by_key.get((b.date, b.block_start_time))
             if r:
                 b.block_start_time = r["blockStartTime"]
                 b.block_end_time = r["blockEndTime"]

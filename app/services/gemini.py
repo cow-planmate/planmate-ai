@@ -27,20 +27,18 @@ def _get_client() -> genai.Client:
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    # ClientError(429) / ServerError(5xx) 만 재시도. 400/404 등은 즉시 실패.
+    # ServerError(5xx) 만 재시도. 400/404 즉시 실패.
+    # 429 는 전부 재시도 안 함 (17 #8, C-9 연장): 일일쿼터(PerDay)든 분당(RPM)이든
+    # 에이전트 데드라인(~30초) 안에 안 풀림 → 6회 지수백오프가 데드라인을 통째로 잡아먹음.
+    # 429 는 곧장 상위로 던져 502/되물음으로 끝내는 게 낫다.
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-    if code not in (429, 500, 502, 503, 504):
-        return False
-    # 429 중 '일일 무료 쿼터 소진'(PerDay)은 재시도해도 소용없음 → 즉시 실패 (06 §6, 17 #8).
-    if code == 429 and ("PerDay" in str(exc) or "RequestsPerDay" in str(exc)):
-        return False
-    return True
+    return code in (500, 502, 503, 504)
 
 
 _retry = retry(
     retry=retry_if_exception(_is_retryable),
-    wait=wait_exponential(multiplier=2, min=2, max=120),
-    stop=stop_after_attempt(6),
+    wait=wait_exponential(multiplier=2, min=2, max=15),
+    stop=stop_after_attempt(4),
     reraise=True,
 )
 

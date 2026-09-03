@@ -79,6 +79,44 @@ def test_update_block_by_id_keeps_memo(db):
     assert b.block_start_time == "12:00"  # 시각 유지
 
 
+# ── #6: placeId 교체 시 content_type 역유도가 LLM blockCategory 를 이김 ────────
+def test_update_block_category_from_content_type_not_llm(db):
+    blocks = [_block(811, 41, "12:00:00", "RESTAURANT", FOOD)]
+    out = LlmOutput.model_validate({
+        "userMessage": "바꿔", "shownPlaceIds": [],
+        # ATTR_A = content_type 12 → ATTRACTION. LLM 이 틀리게 RESTAURANT 실어도 무시돼야.
+        "actions": [{"op": "updateBlock", "target": {"blockId": 811},
+                     "placeId": ATTR_A, "blockCategory": "RESTAURANT"}],
+    })
+    resp = assemble(out, _req(place_blocks=blocks))
+    assert resp.plan.place_blocks[0].block_category == "ATTRACTION"
+
+
+# ── #8b: 점유 슬롯에 createBlock → drop, 원본 유지 ─────────────────────────
+def test_create_block_on_occupied_slot_dropped(db):
+    blocks = [_block(811, 41, "12:00:00", "RESTAURANT", FOOD, memo="원본")]
+    out = LlmOutput.model_validate({
+        "userMessage": "추가", "shownPlaceIds": [],
+        "actions": [{"op": "createBlock", "date": "2026-10-11", "blockStartTime": "12:00:00",
+                     "blockEndTime": "13:00:00", "blockCategory": "ATTRACTION", "placeId": ATTR_A}],
+    })
+    resp = assemble(out, _req(place_blocks=blocks))
+    slot = [b for b in resp.plan.place_blocks if b.block_start_time == "12:00"]
+    assert len(slot) == 1 and slot[0].block_id == 811 and slot[0].memo == "원본"
+
+
+# ── #8: 기존 날짜에 createTimeTable → drop ────────────────────────────────
+def test_create_timetable_existing_date_dropped(db):
+    out = LlmOutput.model_validate({
+        "userMessage": "추가", "shownPlaceIds": [],
+        "actions": [{"op": "createTimeTable", "date": "2026-10-12",
+                     "timeTableStartTime": "09:00", "timeTableEndTime": "20:00"}],
+    })
+    resp = assemble(out, _req())   # _req 기본 timetables = 10-11, 10-12
+    dates = [t.date for t in resp.plan.timetables]
+    assert dates == ["2026-10-11", "2026-10-12"]   # 안 늘어남
+
+
 # ── updateBlock by 자연키 (새 블록, blockId 없음) ──────────────────────────
 def test_update_block_by_natural_key(db):
     pending = {
@@ -234,3 +272,33 @@ def test_resequence(db):
     # 관광(2)은 위치 고정, 식당 2개만 재배치 가능
     attr = [b for b in resp.plan.place_blocks if b.block_category == "ATTRACTION"][0]
     assert attr.block_start_time == "14:00"
+
+
+def test_resequence_preview_blocks_no_collapse(db):
+    """blockId 없는 프리뷰 블록 여러 개 → (date,None) 키 붕괴로 뭉개지면 안 됨 (#4)."""
+    pending = {
+        "planFrame": {"planId": "p1", "adultCount": 0, "childCount": 0},
+        "timetables": [{"timeTableId": 41, "date": "2026-10-11",
+                        "timeTableStartTime": "09:00:00", "timeTableEndTime": "20:00:00"}],
+        "placeBlocks": [
+            {"placeId": FOOD, "date": "2026-10-11", "blockStartTime": "12:00:00",
+             "blockEndTime": "13:00:00", "blockCategory": "RESTAURANT"},
+            {"placeId": ATTR_A, "date": "2026-10-11", "blockStartTime": "14:00:00",
+             "blockEndTime": "15:00:00", "blockCategory": "ATTRACTION"},
+            {"placeId": ATTR_B, "date": "2026-10-11", "blockStartTime": "18:00:00",
+             "blockEndTime": "19:00:00", "blockCategory": "RESTAURANT"},
+        ],
+    }
+    req = _req(pending=pending)
+    for b, (la, lo) in zip(req.pending_context.place_blocks,
+                           [(35.0, 129.0), (35.5, 129.5), (35.02, 128.9)]):
+        b.latitude, b.longitude = la, lo
+    out = LlmOutput.model_validate({
+        "userMessage": "동선 정리", "shownPlaceIds": [],
+        "actions": [{"op": "resequenceBlocks", "scope": "plan"}],
+    })
+    resp = assemble(out, req)
+    pids = sorted(b.place_id for b in resp.plan.place_blocks)
+    assert pids == sorted([FOOD, ATTR_A, ATTR_B])          # 셋 다 살아있음, 안 뭉개짐
+    assert len(resp.plan.place_blocks) == 3
+    assert sorted(b.block_start_time for b in resp.plan.place_blocks) == ["12:00", "14:00", "18:00"]

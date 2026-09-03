@@ -59,9 +59,9 @@ SYSTEM = """\
 """
 
 
-def _fmt_block(b: PlaceBlock) -> str:
+def _fmt_block(b: PlaceBlock, date: str | None = None) -> str:
     bid = b.block_id if b.block_id is not None else "새블록"
-    return (f'  [{bid}] {b.date} {b.block_start_time}~{b.block_end_time} '
+    return (f'  [{bid}] {date or b.date} {b.block_start_time}~{b.block_end_time} '
             f'{b.block_category} "{b.place_name or ""}" (placeId={b.place_id})'
             + (f' memo="{b.memo}"' if b.memo else ""))
 
@@ -88,12 +88,10 @@ def build_context(req: ChatbotRequest) -> str:
         lines.append(f"  [{tid}] {t.date} 창 {t.time_table_start_time}~{t.time_table_end_time}")
     lines.append("## 블록")
     if edit.place_blocks:
-        # date 채우기 (프롬프트 표시용 — E-1 정규화와 별개, 여기선 읽기 편의)
+        # date 표시용으로만 조인 (req 를 mutate 하지 않음 — 정규화는 E-1 assembly 몫)
         date_by_tt = {t.time_table_id: t.date for t in edit.timetables if t.time_table_id is not None}
         for b in edit.place_blocks:
-            if b.date is None:
-                b.date = date_by_tt.get(b.time_table_id)
-            lines.append(_fmt_block(b))
+            lines.append(_fmt_block(b, b.date or date_by_tt.get(b.time_table_id)))
     else:
         lines.append("  (없음)")
 

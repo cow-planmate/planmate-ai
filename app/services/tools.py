@@ -189,6 +189,10 @@ def _search_places(args: dict, ctx: ToolContext) -> dict:
 
 
 def _generate_itinerary(args: dict, ctx: ToolContext) -> dict:
+    if not (ctx.region or args.get("region")):
+        # 목적지 지역이 아예 없음 (userContext.regionCodes 빔). 전국 편성은 무의미 →
+        # LLM 이 되물음하게 신호. resolve_region("") 은 unresolved 를 안 내므로 여기서 가드.
+        return {"from": None, "block_count": 0, "days": [], "notes": {"region": "unresolved"}}
     ctx._gen_calls += 1
     handle = f"gen_itin:call_{ctx._gen_calls}"
     res = itinerary.generate_itinerary(
