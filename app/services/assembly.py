@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
+from app.data.categories import CTYPE_TO_CATEGORY
 from app.db import query as db_query
 from app.models import (
     ChatbotRequest,
@@ -31,9 +33,30 @@ from app.services.itinerary import resequence as _resequence
 
 log = logging.getLogger(__name__)
 
-_CTYPE_CAT = {"12": "attraction", "14": "attraction", "32": "lodging", "39": "restaurant"}
-# content_type_id → v2 BlockCategory. LLM 값 대신 이걸로 확정 (v2 PlaceSummaryDto "역유도" 방식, 17 C-6).
-_CTYPE_BLOCKCAT = {"12": "ATTRACTION", "14": "ATTRACTION", "32": "ACCOMMODATION", "39": "RESTAURANT"}
+# content_type_id → 카테고리(= v2 BlockCategory). 카테고리 어휘 단일 (app/data/categories.py).
+# 블록 category 는 LLM 값 대신 이걸로 확정 (v2 PlaceSummaryDto "역유도" 방식, 17 C-6).
+
+
+# ── 포맷 정규화 (v2 wire 형태로) ────────────────────────────────────────────
+def _hm(t: str | None) -> str | None:
+    """시각 → canonical HH:MM (v2 LocalTime ISO 직렬화 형태). 초 잘라내고 시·분 zero-pad."""
+    if not t:
+        return t
+    p = t.split(":")
+    if len(p) >= 2 and p[0].strip().isdigit() and p[1].strip().isdigit():
+        return f"{int(p[0]):02d}:{int(p[1]):02d}"
+    return t
+
+
+def _norm_date(d: str | None) -> str | None:
+    """YYYY-MM-DD 로 정규화·검증 (zero-pad 포함). 파싱 실패면 None."""
+    if not d:
+        return d
+    try:
+        return datetime.strptime(d.strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
 
 # search_places D필드 key → ShownPlace 헤드라인 필드
 _HEADLINE = {
@@ -67,7 +90,7 @@ def hydrate_places(content_ids: list[str]) -> dict[str, dict]:
             "latitude": float(r["mapy"]) if r["mapy"] is not None else None,
             "longitude": float(r["mapx"]) if r["mapx"] is not None else None,
             "overview": (r["overview"] or "").strip() or None,
-            "category": _CTYPE_CAT.get(r["content_type_id"]),
+            "category": CTYPE_TO_CATEGORY.get(r["content_type_id"]),
         }
         for r in rows
     }
@@ -115,13 +138,52 @@ def _builder_blocks(handle: str, cache: dict[str, dict], notes: dict) -> list[Pl
         return []
     for k, v in entry.get("notes", {}).items():   # 빌더 슬롯 notes → 조립 notes 로 승계
         notes.setdefault("itinerary", {})[k] = v
-    return [PlaceBlock.model_validate(b) for b in entry.get("blocks", [])]
+    out: list[PlaceBlock] = []
+    for b in entry.get("blocks", []):
+        pb = PlaceBlock.model_validate(b)
+        pb.block_start_time = _hm(pb.block_start_time)
+        pb.block_end_time = _hm(pb.block_end_time)
+        out.append(pb)
+    return out
 
 
 # ── op 적용 ─────────────────────────────────────────────────────────────────
 def _drop(notes: dict, msg: str) -> None:
     notes.setdefault("dropped_ops", []).append(msg)
     log.warning("[assembly] op drop: %s", msg)
+
+
+_OP_TIME_ATTRS = ("block_start_time", "block_end_time",
+                  "time_table_start_time", "time_table_end_time")
+
+
+def _normalize_ops(ops: list[Op], notes: dict) -> list[Op]:
+    """LLM op 의 시각 → HH:MM, 날짜 → YYYY-MM-DD 검증 (프롬프트만으로는 안 새는 것 방어).
+    날짜 형식 오류 op 은 drop. Op/BlockTarget 는 validate_assignment 아님 → setattr 직접."""
+    out: list[Op] = []
+    for op in ops:
+        for a in _OP_TIME_ATTRS:
+            v = getattr(op, a, None)
+            if v is not None:
+                setattr(op, a, _hm(v))
+        if op.target is not None and op.target.block_start_time is not None:
+            op.target.block_start_time = _hm(op.target.block_start_time)
+        bad_date = False
+        for holder in (op, op.target):
+            if holder is None:
+                continue
+            d = getattr(holder, "date", None)
+            if not d:
+                continue
+            nd = _norm_date(d)
+            if nd is None:
+                _drop(notes, f"{op.op}: 날짜 형식 오류 '{d}'")
+                bad_date = True
+            else:
+                holder.date = nd
+        if not bad_date:
+            out.append(op)
+    return out
 
 
 def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
@@ -134,7 +196,7 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
         h = hydrate_places([op.place_id]).get(op.place_id)
         if not h:
             return _drop(notes, f"createBlock: contentId {op.place_id} 캐시에 없음")
-        cat = _CTYPE_BLOCKCAT.get(h["place_content_type_id"], op.block_category)
+        cat = CTYPE_TO_CATEGORY.get(h["place_content_type_id"], op.block_category)
         blocks.append(PlaceBlock(
             block_id=None, date=op.date,
             block_start_time=op.block_start_time, block_end_time=op.block_end_time,
@@ -164,7 +226,7 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
             b.place_thumbnail_url = h["place_thumbnail_url"]
             b.latitude = h["latitude"]
             b.longitude = h["longitude"]
-            b.block_category = _CTYPE_BLOCKCAT.get(h["place_content_type_id"], b.block_category)
+            b.block_category = CTYPE_TO_CATEGORY.get(h["place_content_type_id"], b.block_category)
         if op.block_start_time:
             b.block_start_time = op.block_start_time
         if op.block_end_time:
@@ -261,9 +323,12 @@ def _build_shown_places(ids: list[str], search_cache: dict[str, dict]) -> list[S
     for cid in ids:
         src = search_cache.get(cid)
         if src:
+            cat = src.get("category")
+            if cat is None:   # 추천스코프(12/14/32/39) 밖 → 스킵 (category = v2 enum 강제)
+                continue
             sp = ShownPlace(
                 content_id=cid, content_type_id=src.get("content_type_id"),
-                category=src.get("category"), title=src.get("title", ""),
+                category=cat, title=src.get("title", ""),
                 addr1=src.get("addr1") or None,
                 thumbnail_url=src.get("thumbnail") or None,
                 copyright_div_cd=src.get("copyright_div_cd") or None,
@@ -277,6 +342,8 @@ def _build_shown_places(ids: list[str], search_cache: dict[str, dict]) -> list[S
             out.append(sp)
         elif cid in fallback:
             f = fallback[cid]
+            if f["category"] is None:
+                continue
             out.append(ShownPlace(
                 content_id=cid, content_type_id=f["place_content_type_id"],
                 category=f["category"], title=f["place_name"] or "",
@@ -301,13 +368,20 @@ def assemble(
     search_cache = search_cache or {}
     notes: dict = {}
 
-    # 편집 대상 + 정규화 (12 §8 — 블록에 date 채움)
+    # 편집 대상 + 정규화 (12 §8 — 블록에 date 채움 / 시각 → HH:MM)
     target: PlanState = req.pending_context or req.plan_context
-    timetables = [t.model_copy(deep=True) for t in target.timetables]
+    timetables: list[Timetable] = []
+    for t in target.timetables:
+        nt = t.model_copy(deep=True)
+        nt.time_table_start_time = _hm(nt.time_table_start_time)
+        nt.time_table_end_time = _hm(nt.time_table_end_time)
+        timetables.append(nt)
     date_by_ttid = {t.time_table_id: t.date for t in timetables if t.time_table_id is not None}
     blocks: list[PlaceBlock] = []
     for b in target.place_blocks:
         nb = b.model_copy(deep=True)
+        nb.block_start_time = _hm(nb.block_start_time)
+        nb.block_end_time = _hm(nb.block_end_time)
         if nb.date is None and nb.time_table_id is not None:
             nb.date = date_by_ttid.get(nb.time_table_id)
         blocks.append(nb)
@@ -318,7 +392,7 @@ def assemble(
         _log_notes(notes)
         return ChatbotResponse(user_message=llm.user_message, plan=None, shown_places=shown)
 
-    for op in llm.actions:
+    for op in _normalize_ops(llm.actions, notes):
         _apply_op(op, blocks, timetables, notes, gen_itin_cache)
 
     plan = PlanState(

@@ -35,7 +35,7 @@ SYSTEM = """\
 # 블록 지칭 (target / createBlock 참조)
 - 플랜에 이미 저장된 블록 = 그 blockId 를 쓴다.  target: {"blockId": 812}
 - 아직 저장 안 된 블록(직전 턴 제안이 pendingContext 로 온 것, blockId 없음) = 자연키.
-  target: {"date": "2026-10-12", "blockStartTime": "18:00:00"}  (필요하면 blockCategory 도)
+  target: {"date": "2026-10-12", "blockStartTime": "18:00"}  (필요하면 blockCategory 도)
 - placeId 값은 반드시 search_places / generate_itinerary 결과에 있던 contentId 만 쓴다. 절대 지어내지 마라.
 
 # 편집 대상

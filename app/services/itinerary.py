@@ -26,8 +26,8 @@ import math
 from app.data.regions import resolve_region
 from app.services.candidates import search_places
 
-# slot category → v2 BlockCategory enum
-_BLOCK_CAT = {"attraction": "ATTRACTION", "lodging": "ACCOMMODATION", "restaurant": "RESTAURANT"}
+# slot category = search_places 반환 category = v2 BlockCategory (ATTRACTION/ACCOMMODATION/RESTAURANT).
+# 어휘가 하나라 매핑 테이블 없음 (app/data/categories.py).
 
 _SEARCH_LIMIT = 5   # 2-A: 1위 픽. 좌표 null·필드 결손 스킵 여유분 (D9)
 
@@ -50,7 +50,7 @@ def _block(pick: dict, slot: dict, date: str) -> dict:
         "date": date,
         "blockStartTime": slot["start"],
         "blockEndTime": slot["end"],
-        "blockCategory": _BLOCK_CAT[pick["category"]],
+        "blockCategory": pick["category"],
         "placeId": pick["content_id"],
         "placeName": pick["title"],
         "placeContentTypeId": pick["content_type_id"],
@@ -135,7 +135,7 @@ def generate_itinerary(
 
         for i, slot in enumerate(day.get("slots", [])):
             ref = f"{date}.slot{i}"
-            is_lodging = slot["category"] == "lodging"
+            is_lodging = slot["category"] == "ACCOMMODATION"
 
             # 숙소 재사용 (검색 안 함)
             if is_lodging and reuse_accommodation and accommodation is not None:

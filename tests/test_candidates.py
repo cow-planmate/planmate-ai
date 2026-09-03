@@ -13,19 +13,19 @@ pytestmark = pytest.mark.usefixtures("db")
 
 
 def test_structural_restaurant_region():
-    r = search_places(category="restaurant", region="부산", limit=10)
+    r = search_places(category="RESTAURANT", region="부산", limit=10)
     assert r["notes"] == {}
     assert 1 <= len(r["places"]) <= 10
     assert r["total"] > 100  # 부산 음식점 519
     for p in r["places"]:
-        assert p["category"] == "restaurant"
+        assert p["category"] == "RESTAURANT"
         assert p["content_type_id"] == "39"          # raw — v2 placeContentTypeId
         assert "copyright_div_cd" in p               # v2 placeCopyrightDivCd (빈 문자열 허용)
         assert "부산" in p["addr1"]
 
 
 def test_subtype_rank_puts_cafes_first():
-    r = search_places(category="restaurant", region="부산", subtype="카페", limit=8)
+    r = search_places(category="RESTAURANT", region="부산", subtype="카페", limit=8)
     # 비-strict → 필터 아님, total 은 부산 음식점 전체
     assert r["total"] > 100
     # 상위권은 카페 성격 (firstmenu 에 디저트/음료 키워드가 자주)
@@ -33,8 +33,8 @@ def test_subtype_rank_puts_cafes_first():
 
 
 def test_signgu_narrows_scope():
-    wide = search_places(category="restaurant", region="부산", limit=50)
-    narrow = search_places(category="restaurant", region="부산", signgu=["710"], limit=50)
+    wide = search_places(category="RESTAURANT", region="부산", limit=50)
+    narrow = search_places(category="RESTAURANT", region="부산", signgu=["710"], limit=50)
     assert narrow["total"] < wide["total"]
     assert narrow["total"] >= 1
     from app.db import query as dbq
@@ -44,49 +44,49 @@ def test_signgu_narrows_scope():
 
 
 def test_signgu_bogus_code_empty():
-    r = search_places(category="restaurant", region="부산", signgu=["999"], limit=5)
+    r = search_places(category="RESTAURANT", region="부산", signgu=["999"], limit=5)
     assert r["places"] == [] and r["total"] == 0
     assert r["notes"] == {}          # signgu 는 코드라 "unresolved" 아님, 그냥 0건
 
 
 def test_subtype_strict_filters():
-    loose = search_places(category="restaurant", region="부산", subtype="중식", limit=50)
-    strict = search_places(category="restaurant", region="부산", subtype="중식",
+    loose = search_places(category="RESTAURANT", region="부산", subtype="중식", limit=50)
+    strict = search_places(category="RESTAURANT", region="부산", subtype="중식",
                            strict=True, limit=50)
     assert strict["total"] < loose["total"]
     assert strict["total"] >= 1
 
 
 def test_subtype_synonym_and_unmatched():
-    a = search_places(category="restaurant", region="부산", subtype="중국집",
+    a = search_places(category="RESTAURANT", region="부산", subtype="중국집",
                       strict=True, limit=5)
-    b = search_places(category="restaurant", region="부산", subtype="중식",
+    b = search_places(category="RESTAURANT", region="부산", subtype="중식",
                       strict=True, limit=5)
     assert a["total"] == b["total"]
-    u = search_places(category="restaurant", region="부산", subtype="마라탕", limit=5)
+    u = search_places(category="RESTAURANT", region="부산", subtype="마라탕", limit=5)
     assert u["notes"].get("subtype_unmatched") == "마라탕"
 
 
 def test_amenities_hard_filter_and():
-    one = search_places(category="lodging", region="부산", amenities=["바베큐"], limit=50)
-    two = search_places(category="lodging", region="부산",
+    one = search_places(category="ACCOMMODATION", region="부산", amenities=["바베큐"], limit=50)
+    two = search_places(category="ACCOMMODATION", region="부산",
                         amenities=["바베큐", "사우나"], limit=50)
     assert one["total"] >= two["total"] >= 1
 
 
 def test_amenities_soft_note():
-    r = search_places(category="lodging", region="부산", amenities=["수영장"], limit=5)
+    r = search_places(category="ACCOMMODATION", region="부산", amenities=["수영장"], limit=5)
     assert r["notes"].get("soft_matched") == ["수영장"]
     assert r["notes"].get("confidence") == "low"
 
 
 def test_amenities_unmatched_note():
-    r = search_places(category="lodging", region="부산", amenities=["헬리패드"], limit=5)
+    r = search_places(category="ACCOMMODATION", region="부산", amenities=["헬리패드"], limit=5)
     assert "헬리패드" in r["notes"].get("unmatched_amenities", [])
 
 
 def test_region_unresolved_returns_empty_with_note():
-    r = search_places(category="restaurant", region="우리 동네")
+    r = search_places(category="RESTAURANT", region="우리 동네")
     assert r["places"] == []
     assert r["notes"] == {"region": "unresolved"}
 
@@ -104,7 +104,7 @@ def test_name_not_found_note():
 
 
 def test_near_distance_sort():
-    r = search_places(category="restaurant", region="부산", near="광안리해수욕장",
+    r = search_places(category="RESTAURANT", region="부산", near="광안리해수욕장",
                       sort_by="distance", limit=8)
     dists = [p["distance_km"] for p in r["places"] if "distance_km" in p]
     assert dists == sorted(dists)
@@ -112,19 +112,19 @@ def test_near_distance_sort():
 
 
 def test_near_unresolved():
-    r = search_places(category="restaurant", region="부산",
+    r = search_places(category="RESTAURANT", region="부산",
                       near="없는장소이름qwerty", sort_by="distance", limit=5)
     assert r["notes"].get("anchor") == "unresolved"
 
 
 def test_distance_no_anchor_skipped():
-    r = search_places(category="restaurant", region="부산", sort_by="distance", limit=5)
+    r = search_places(category="RESTAURANT", region="부산", sort_by="distance", limit=5)
     assert r["notes"].get("distance_sort") == "skipped"
 
 
 def test_subtype_survives_sort_by_distance():
     # subtype 랭크가 거리보다 앞 → 결과 상위는 카페, 그 안에서 거리 오름차순
-    r = search_places(category="restaurant", region="부산", subtype="카페", strict=True,
+    r = search_places(category="RESTAURANT", region="부산", subtype="카페", strict=True,
                       near="광안리해수욕장", sort_by="distance", limit=8)
     dists = [p["distance_km"] for p in r["places"] if "distance_km" in p]
     assert dists == sorted(dists)  # strict 라 전부 카페, 거리순
@@ -140,22 +140,22 @@ def test_relevance_default_not_distance_first(monkeypatch):
               "WHERE l.ldong_regn_cd='26' AND l.content_type_id='39' LIMIT 1")[0]
     vec = [float(x) for x in row["vec"].strip("[]").split(",")]
     monkeypatch.setattr(candidates, "embed_query", lambda _t: vec)
-    r = search_places(category="restaurant", region="부산", query="x",
+    r = search_places(category="RESTAURANT", region="부산", query="x",
                       near="광안리해수욕장", limit=10)  # sort_by 기본 relevance
     dists = [p["distance_km"] for p in r["places"] if "distance_km" in p]
     assert dists != sorted(dists)  # 거리순 아님
 
 
 def test_max_budget_note():
-    r = search_places(category="lodging", region="부산", max_budget=80000, limit=10)
+    r = search_places(category="ACCOMMODATION", region="부산", max_budget=80000, limit=10)
     assert r["notes"].get("price_filter", {}).get("approx") is True
     assert r["total"] >= 1
 
 
 def test_exclude_ids():
-    base = search_places(category="restaurant", region="부산", limit=5)
+    base = search_places(category="RESTAURANT", region="부산", limit=5)
     first = base["places"][0]["content_id"]
-    ex = search_places(category="restaurant", region="부산",
+    ex = search_places(category="RESTAURANT", region="부산",
                        exclude_ids=[first], limit=5)
     assert all(p["content_id"] != first for p in ex["places"])
 
@@ -170,11 +170,11 @@ def test_query_vector_path_mocked(monkeypatch):
     vec = [float(x) for x in row["vec"].strip("[]").split(",")]
     monkeypatch.setattr(candidates, "embed_query", lambda _t: vec)
 
-    r = search_places(category="restaurant", region="부산", query="아무거나", limit=5)
+    r = search_places(category="RESTAURANT", region="부산", query="아무거나", limit=5)
     assert r["notes"].get("query_embed") != "failed"
     assert r["places"][0]["content_id"] == row["content_id"]
 
 
 def test_overview_truncated():
-    r = search_places(category="attraction", region="부산", limit=10)
+    r = search_places(category="ATTRACTION", region="부산", limit=10)
     assert all(len(p["overview"]) <= 300 for p in r["places"])

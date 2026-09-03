@@ -34,8 +34,8 @@ SEARCH_PLACES = types.FunctionDeclaration(
         type=types.Type.OBJECT,
         properties={
             "category": types.Schema(
-                type=types.Type.STRING, enum=["attraction", "lodging", "restaurant"],
-                description="장소 대분류. 관광지/문화시설=attraction, 숙소=lodging, 식당·카페=restaurant.",
+                type=types.Type.STRING, enum=["ATTRACTION", "ACCOMMODATION", "RESTAURANT"],
+                description="장소 대분류. 관광지/문화시설=ATTRACTION, 숙소=ACCOMMODATION, 식당·카페=RESTAURANT.",
             ),
             "region": types.Schema(
                 type=types.Type.STRING,
@@ -109,7 +109,7 @@ GENERATE_ITINERARY = types.FunctionDeclaration(
                                     "end": types.Schema(type=types.Type.STRING, description="HH:MM"),
                                     "category": types.Schema(
                                         type=types.Type.STRING,
-                                        enum=["attraction", "lodging", "restaurant"],
+                                        enum=["ATTRACTION", "ACCOMMODATION", "RESTAURANT"],
                                     ),
                                     "theme": types.Schema(type=types.Type.STRING, description="관광 테마(역사/자연 등)"),
                                     "cuisine": types.Schema(type=types.Type.STRING, description="음식 종류(한식/중식 등)"),

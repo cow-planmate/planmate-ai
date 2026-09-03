@@ -76,7 +76,7 @@ def test_update_block_by_id_keeps_memo(db):
     assert b.block_id == 811
     assert b.memo == "여기 예약함"          # 보존
     assert b.place_id == ATTR_A             # 교체
-    assert b.block_start_time == "12:00:00"  # 시각 유지
+    assert b.block_start_time == "12:00"  # 시각 유지
 
 
 # ── updateBlock by 자연키 (새 블록, blockId 없음) ──────────────────────────
@@ -124,7 +124,7 @@ def test_update_block_fuzzy(db):
     resp = assemble(out, _req(pending=pending))
     # 18:00 없음 → 18:15 블록에 매칭
     hit = [b for b in resp.plan.place_blocks if b.place_id == LODGE]
-    assert len(hit) == 1 and hit[0].block_start_time == "18:15:00"
+    assert len(hit) == 1 and hit[0].block_start_time == "18:15"
 
 
 # ── deleteBlock ────────────────────────────────────────────────────────────
@@ -196,10 +196,10 @@ def test_shown_places_rich(db):
         "shownPlaceIds": [ATTR_A, FOOD],
     })
     search_cache = {
-        ATTR_A: {"content_id": ATTR_A, "title": "국제시장", "category": "attraction",
+        ATTR_A: {"content_id": ATTR_A, "title": "국제시장", "category": "ATTRACTION",
                  "content_type_id": "12", "copyright_div_cd": "Type3", "addr1": "부산 중구",
                  "mapx": 129.0, "mapy": 35.1, "overview": "짧은 요약...", "thumbnail": "http://x"},
-        FOOD: {"content_id": FOOD, "title": "태종대짬뽕", "category": "restaurant",
+        FOOD: {"content_id": FOOD, "title": "태종대짬뽕", "category": "RESTAURANT",
                "content_type_id": "39", "copyright_div_cd": "", "addr1": "부산 영도구",
                "mapx": 129.1, "mapy": 35.05, "overview": "...", "thumbnail": "",
                "firstmenu": "짬뽕", "opentimefood": "10:00~21:00"},
@@ -230,7 +230,7 @@ def test_resequence(db):
     })
     resp = assemble(out, req)
     starts = sorted(b.block_start_time for b in resp.plan.place_blocks)
-    assert starts == ["12:00:00", "14:00:00", "18:00:00"]   # 시각 슬롯은 그대로
+    assert starts == ["12:00", "14:00", "18:00"]   # 시각 슬롯은 그대로
     # 관광(2)은 위치 고정, 식당 2개만 재배치 가능
     attr = [b for b in resp.plan.place_blocks if b.block_category == "ATTRACTION"][0]
-    assert attr.block_start_time == "14:00:00"
+    assert attr.block_start_time == "14:00"

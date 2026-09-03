@@ -6,15 +6,11 @@
 
 from __future__ import annotations
 
-CATEGORY_CTYPE: dict[str, tuple[str, ...]] = {
-    "attraction": ("12", "14"),
-    "lodging": ("32",),
-    "restaurant": ("39",),
-}
+# CATEGORY_CTYPE 은 app/data/categories.py (CATEGORY_TO_CTYPES) 로 이동 — 카테고리 어휘 단일화.
 
-# subtype → (lclsSystm 레벨 컬럼, 코드). category 별.
+# subtype → (lclsSystm 레벨 컬럼, 코드). category(ATTRACTION/ACCOMMODATION/RESTAURANT) 별.
 SUBTYPE_CODE: dict[str, dict[str, tuple[str, str]]] = {
-    "restaurant": {
+    "RESTAURANT": {
         "한식": ("lcls_systm2", "FD01"),
         "중식": ("lcls_systm3", "FD020100"), "중국집": ("lcls_systm3", "FD020100"),
         "중화요리": ("lcls_systm3", "FD020100"),
@@ -28,7 +24,7 @@ SUBTYPE_CODE: dict[str, dict[str, tuple[str, str]]] = {
         "퓨전": ("lcls_systm3", "FD020500"),
         "주점": ("lcls_systm2", "FD04"), "술집": ("lcls_systm2", "FD04"),
     },
-    "attraction": {
+    "ATTRACTION": {
         "역사": ("lcls_systm1", "HS"), "유적": ("lcls_systm1", "HS"),
         "유적지": ("lcls_systm1", "HS"), "전통": ("lcls_systm1", "HS"),
         "사찰": ("lcls_systm1", "HS"), "절": ("lcls_systm1", "HS"),
@@ -45,7 +41,7 @@ SUBTYPE_CODE: dict[str, dict[str, tuple[str, str]]] = {
         "전망대": ("lcls_systm3", "VE010200"), "타워": ("lcls_systm3", "VE010200"),
         "테마파크": ("lcls_systm3", "VE020100"), "놀이공원": ("lcls_systm3", "VE020100"),
     },
-    "lodging": {
+    "ACCOMMODATION": {
         "호텔": ("lcls_systm3", "AC010100"),
         "모텔": ("lcls_systm3", "AC040100"),
         "펜션": ("lcls_systm3", "AC030100"),
@@ -61,32 +57,30 @@ SUBTYPE_CODE: dict[str, dict[str, tuple[str, str]]] = {
 
 # subtype description 에 노출할 유효값(별칭 제외 대표값)
 SUBTYPE_VOCAB = {
-    "restaurant": ["한식", "중식", "일식", "양식", "카페", "분식", "제과", "퓨전", "주점"],
-    "attraction": ["역사", "자연", "도시관광", "체험", "해수욕장", "호수", "공원",
+    "RESTAURANT": ["한식", "중식", "일식", "양식", "카페", "분식", "제과", "퓨전", "주점"],
+    "ATTRACTION": ["역사", "자연", "도시관광", "체험", "해수욕장", "호수", "공원",
                    "박물관", "미술관", "전시관", "공연장", "전망대", "테마파크"],
-    "lodging": ["호텔", "모텔", "펜션", "한옥스테이", "게스트하우스", "유스호스텔",
-                "리조트", "야영장", "글램핑"],
+    "ACCOMMODATION": ["호텔", "모텔", "펜션", "한옥스테이", "게스트하우스", "유스호스텔",
+                      "리조트", "야영장", "글램핑"],
 }
 
-# amenities → (테이블, 컬럼, 매칭방식). '1' = subfacility 불린 / 'kids' / 'parking'(근사)
-#   테이블: lodging=place_intro_lodging, food=place_intro_food
-AMENITY_COLUMN: dict[str, tuple[str, str, str]] = {
-    "바베큐": ("lodging", "barbecue", "1"), "바비큐": ("lodging", "barbecue", "1"),
-    "bbq": ("lodging", "barbecue", "1"),
-    "사우나": ("lodging", "sauna", "1"),
-    "대중탕": ("lodging", "publicbath", "1"), "목욕탕": ("lodging", "publicbath", "1"),
-    "헬스": ("lodging", "fitness", "1"), "헬스장": ("lodging", "fitness", "1"),
-    "피트니스": ("lodging", "fitness", "1"),
-    "노래방": ("lodging", "karaoke", "1"),
-    "세미나실": ("lodging", "seminar", "1"), "회의실": ("lodging", "seminar", "1"),
-    "자전거": ("lodging", "bicycle", "1"),
-    "매점": ("lodging", "beverage", "1"), "편의점": ("lodging", "beverage", "1"),
-    "캠프파이어": ("lodging", "campfire", "1"),
-    "공용pc": ("lodging", "publicpc", "1"),
-    "스포츠시설": ("lodging", "sports", "1"),
-    "뷰티": ("lodging", "beauty", "1"),
-    "키즈존": ("food", "kidsfacility", "kids"), "키즈": ("food", "kidsfacility", "kids"),
-    "주차": ("*", "parking", "parking"),
+# amenities → (컬럼, 매칭방식). '1' = subfacility 불린 (place_intro_lodging) /
+#   'kids' = kidsfacility (place_intro_food) / 'parking' = 근사 (카테고리별 컬럼, candidates.py)
+AMENITY_COLUMN: dict[str, tuple[str, str]] = {
+    "바베큐": ("barbecue", "1"), "바비큐": ("barbecue", "1"), "bbq": ("barbecue", "1"),
+    "사우나": ("sauna", "1"),
+    "대중탕": ("publicbath", "1"), "목욕탕": ("publicbath", "1"),
+    "헬스": ("fitness", "1"), "헬스장": ("fitness", "1"), "피트니스": ("fitness", "1"),
+    "노래방": ("karaoke", "1"),
+    "세미나실": ("seminar", "1"), "회의실": ("seminar", "1"),
+    "자전거": ("bicycle", "1"),
+    "매점": ("beverage", "1"), "편의점": ("beverage", "1"),
+    "캠프파이어": ("campfire", "1"),
+    "공용pc": ("publicpc", "1"),
+    "스포츠시설": ("sports", "1"),
+    "뷰티": ("beauty", "1"),
+    "키즈존": ("kidsfacility", "kids"), "키즈": ("kidsfacility", "kids"),
+    "주차": ("parking", "parking"),
 }
 
 # 컬럼 없는(=티어 3 소프트, subfacility 자유텍스트 ILIKE) 키워드

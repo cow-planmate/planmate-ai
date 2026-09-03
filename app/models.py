@@ -25,7 +25,8 @@ _MODEL = ConfigDict(populate_by_name=True)                     # 응답/내부
 # blockCategory: 요청은 v2 의 5값 전부 수용, AI 출력은 3값만 (12 §3-3 / 14 §3)
 BlockCategoryIn = Literal["ATTRACTION", "ACCOMMODATION", "RESTAURANT", "FREE", "SEARCH"]
 BlockCategoryOut = Literal["ATTRACTION", "ACCOMMODATION", "RESTAURANT"]
-PlaceCategory = Literal["attraction", "lodging", "restaurant"]
+# 장소 카테고리 = v2 PlaceCategory enum 과 동일 (app/data/categories.py). 소문자 어휘 폐기.
+PlaceCategory = Literal["ATTRACTION", "ACCOMMODATION", "RESTAURANT"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -118,7 +119,7 @@ class ShownPlace(BaseModel):
     model_config = _MODEL
     content_id: str = Field(alias="contentId")
     content_type_id: str | None = Field(default=None, alias="contentTypeId")
-    category: str
+    category: PlaceCategory   # v2 PlaceCategory enum 값. assembly 가 None 이면 그 place 를 스킵
     title: str
     addr1: str | None = None
     thumbnail_url: str | None = Field(default=None, alias="thumbnailUrl")

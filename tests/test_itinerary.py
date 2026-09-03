@@ -29,9 +29,9 @@ def test_basic_shape_and_category_mapping():
     r = generate_itinerary(
         day_plans=[_day(
             "2026-10-11",
-            _slot("09:30", "12:00", "attraction", theme="역사"),
-            _slot("12:30", "13:30", "restaurant", cuisine="한식"),
-            _slot("20:00", "21:00", "lodging"),
+            _slot("09:30", "12:00", "ATTRACTION", theme="역사"),
+            _slot("12:30", "13:30", "RESTAURANT", cuisine="한식"),
+            _slot("20:00", "21:00", "ACCOMMODATION"),
         )],
         region="부산",
         seed="t1",
@@ -51,7 +51,7 @@ def test_no_duplicate_places_across_slots():
     r = generate_itinerary(
         day_plans=[_day(
             "2026-10-11",
-            *[_slot(f"{h:02d}:00", f"{h+1:02d}:00", "restaurant") for h in range(9, 15)],
+            *[_slot(f"{h:02d}:00", f"{h+1:02d}:00", "RESTAURANT") for h in range(9, 15)],
         )],
         region="부산",
         seed="t2",
@@ -63,12 +63,12 @@ def test_no_duplicate_places_across_slots():
 
 def test_exclude_ids_respected():
     first = generate_itinerary(
-        day_plans=[_day("2026-10-11", _slot("12:00", "13:00", "restaurant"))],
+        day_plans=[_day("2026-10-11", _slot("12:00", "13:00", "RESTAURANT"))],
         region="부산", seed="t3",
     )["blocks"][0]["placeId"]
 
     r = generate_itinerary(
-        day_plans=[_day("2026-10-11", _slot("12:00", "13:00", "restaurant"))],
+        day_plans=[_day("2026-10-11", _slot("12:00", "13:00", "RESTAURANT"))],
         region="부산", seed="t3", exclude_ids=[first],
     )
     assert r["blocks"][0]["placeId"] != first
@@ -77,9 +77,9 @@ def test_exclude_ids_respected():
 def test_accommodation_reused_across_days():
     r = generate_itinerary(
         day_plans=[
-            _day("2026-10-11", _slot("20:00", "21:00", "lodging")),
-            _day("2026-10-12", _slot("20:00", "21:00", "lodging")),
-            _day("2026-10-13", _slot("09:00", "12:00", "attraction")),
+            _day("2026-10-11", _slot("20:00", "21:00", "ACCOMMODATION")),
+            _day("2026-10-12", _slot("20:00", "21:00", "ACCOMMODATION")),
+            _day("2026-10-13", _slot("09:00", "12:00", "ATTRACTION")),
         ],
         region="부산", seed="t4",
     )
@@ -92,8 +92,8 @@ def test_accommodation_reused_across_days():
 def test_accommodation_not_reused_when_flag_off():
     r = generate_itinerary(
         day_plans=[
-            _day("2026-10-11", _slot("20:00", "21:00", "lodging")),
-            _day("2026-10-12", _slot("20:00", "21:00", "lodging")),
+            _day("2026-10-11", _slot("20:00", "21:00", "ACCOMMODATION")),
+            _day("2026-10-12", _slot("20:00", "21:00", "ACCOMMODATION")),
         ],
         region="부산", seed="t5", reuse_accommodation=False,
     )
@@ -103,7 +103,7 @@ def test_accommodation_not_reused_when_flag_off():
 
 def test_region_unresolved_early_return():
     r = generate_itinerary(
-        day_plans=[_day("2026-10-11", _slot("12:00", "13:00", "restaurant"))],
+        day_plans=[_day("2026-10-11", _slot("12:00", "13:00", "RESTAURANT"))],
         region="우리 동네", seed="t6",
     )
     assert r == {"blocks": [], "notes": {"region": "unresolved"}}
@@ -119,7 +119,7 @@ def test_empty_skeleton():
 def test_over_constrained_slot_relaxes_and_notes():
     # lodging + 말도 안 되는 예산 → 완화가 max_budget 떨궈 채움 + notes.relaxed 기록 (§8-7)
     r = generate_itinerary(
-        day_plans=[_day("2026-10-11", _slot("20:00", "21:00", "lodging", max_budget=1))],
+        day_plans=[_day("2026-10-11", _slot("20:00", "21:00", "ACCOMMODATION", max_budget=1))],
         region="부산", seed="t8",
     )
     assert len(r["blocks"]) == 1
@@ -130,7 +130,7 @@ def test_over_constrained_slot_relaxes_and_notes():
 def test_notes_keyed_by_slot_ref(monkeypatch):
     # 못 맞추는 subtype → search_places 가 notes.subtype_unmatched → 슬롯 ref 로 집계
     r = generate_itinerary(
-        day_plans=[_day("2026-10-11", _slot("12:00", "13:00", "restaurant", cuisine="마라탕"))],
+        day_plans=[_day("2026-10-11", _slot("12:00", "13:00", "RESTAURANT", cuisine="마라탕"))],
         region="부산", seed="t9",
     )
     assert "2026-10-11.slot0" in r["notes"]
@@ -141,9 +141,9 @@ def test_signgu_scopes_all_picks():
     from app.db import query as dbq
     r = generate_itinerary(
         day_plans=[_day("2026-10-11",
-                        _slot("09:30", "12:00", "attraction"),
-                        _slot("12:30", "13:30", "restaurant"),
-                        _slot("18:00", "19:30", "restaurant"))],
+                        _slot("09:30", "12:00", "ATTRACTION"),
+                        _slot("12:30", "13:30", "RESTAURANT"),
+                        _slot("18:00", "19:30", "RESTAURANT"))],
         region="부산", signgu=["710"], seed="sg1",
     )
     assert len(r["blocks"]) == 3
@@ -157,7 +157,7 @@ def test_signgu_scopes_all_picks():
 def test_geo_widen_relaxation():
     # 없는 시군구 코드 → 슬롯마다 시도(부산)로 넓힘 + relaxed 에 "area"
     r = generate_itinerary(
-        day_plans=[_day("2026-10-11", _slot("12:30", "13:30", "restaurant"))],
+        day_plans=[_day("2026-10-11", _slot("12:30", "13:30", "RESTAURANT"))],
         region="부산", signgu=["999"], seed="sg2",
     )
     assert len(r["blocks"]) == 1                  # 넓혀서 채워짐
@@ -174,7 +174,7 @@ def test_query_slot_mocked(monkeypatch):
     monkeypatch.setattr(candidates, "embed_query", lambda _t: vec)
 
     r = generate_itinerary(
-        day_plans=[_day("2026-10-11", _slot("18:00", "19:30", "restaurant", query="분위기 좋은"))],
+        day_plans=[_day("2026-10-11", _slot("18:00", "19:30", "RESTAURANT", query="분위기 좋은"))],
         region="부산", seed="t10",
     )
     assert len(r["blocks"]) == 1

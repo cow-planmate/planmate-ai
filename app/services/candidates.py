@@ -14,38 +14,38 @@ from __future__ import annotations
 import math
 import re
 
-from app.data.codes import AMENITY_COLUMN, AMENITY_SOFT, CATEGORY_CTYPE, resolve_subtype
+from app.data.categories import CATEGORY_TO_CTYPES, CTYPE_TO_CATEGORY
+from app.data.codes import AMENITY_COLUMN, AMENITY_SOFT, resolve_subtype
 from app.data.regions import resolve_region
 from app.db import query as db_query
 from app.services.gemini import embed_query
 
-_CTYPE_CAT = {"12": "attraction", "14": "attraction", "32": "lodging", "39": "restaurant"}
 _PARK_NEG = ("불가", "없음", "불가능", "불가눙", "불간으", "x", "-")
 
 # 카테고리별 반환 D 필드 (SELECT 표현식, alias)
 _D_FIELDS = {
-    "restaurant": [
+    "RESTAURANT": [
         ("pf.opentimefood", "opentimefood"), ("pf.firstmenu", "firstmenu"),
         ("pf.treatmenu", "treatmenu"), ("pf.restdatefood", "restdate"),
         ("pf.reservationfood", "reservationfood"), ("pf.packing", "packing"),
         ("pf.chkcreditcardfood", "chkcreditcard"),
     ],
-    "lodging": [
+    "ACCOMMODATION": [
         ("pl.roomtype", "roomtype"), ("pl.roomcount", "roomcount"),
         ("pl.checkintime", "checkintime"), ("pl.checkouttime", "checkouttime"),
         ("pl.subfacility", "subfacility"), ("pl.foodplace", "foodplace"),
         ("pl.pickup", "pickup"), ("pl.chkcooking", "chkcooking"),
     ],
-    "attraction": [
+    "ATTRACTION": [
         ("COALESCE(pa.usetime, pc.usetimeculture)", "usetime"),
         ("COALESCE(pa.restdate, pc.restdateculture)", "restdate"),
         ("pa.expguide", "expguide"),
     ],
 }
 _D_JOINS = {
-    "restaurant": ["LEFT JOIN place_intro_food pf USING (content_id)"],
-    "lodging": ["LEFT JOIN place_intro_lodging pl USING (content_id)"],
-    "attraction": [
+    "RESTAURANT": ["LEFT JOIN place_intro_food pf USING (content_id)"],
+    "ACCOMMODATION": ["LEFT JOIN place_intro_lodging pl USING (content_id)"],
+    "ATTRACTION": [
         "LEFT JOIN place_intro_attraction pa USING (content_id)",
         "LEFT JOIN place_intro_culture pc USING (content_id)",
     ],
@@ -112,7 +112,7 @@ def search_places(
     ord_subtype = ord_embed = ord_dist = None
 
     # --- category → content_type ---
-    ctypes = CATEGORY_CTYPE.get(category or "")
+    ctypes = CATEGORY_TO_CTYPES.get(category or "")
     if ctypes:
         where.append("l.content_type_id = ANY(%(ctypes)s)")
         p["ctypes"] = list(ctypes)
@@ -168,7 +168,7 @@ def search_places(
             a = a.strip()
             hit = AMENITY_COLUMN.get(a) or AMENITY_COLUMN.get(a.lower())
             if hit:
-                tbl, colname, mode = hit
+                colname, mode = hit
                 if mode == "1":  # subfacility 불린
                     joins["pl"] = "LEFT JOIN place_intro_lodging pl USING (content_id)"
                     where.append(f"pl.{colname} = '1'")
@@ -176,9 +176,9 @@ def search_places(
                     joins["pf"] = "LEFT JOIN place_intro_food pf USING (content_id)"
                     where.append("pf.kidsfacility = '1'")
                 elif mode == "parking":  # 근사 (티어 2), 카테고리별 컬럼
-                    _pk = {"restaurant": ("pf", "place_intro_food", "parkingfood"),
-                           "lodging": ("pl", "place_intro_lodging", "parkinglodging"),
-                           "attraction": ("pa", "place_intro_attraction", "parking")}.get(category)
+                    _pk = {"RESTAURANT": ("pf", "place_intro_food", "parkingfood"),
+                           "ACCOMMODATION": ("pl", "place_intro_lodging", "parkinglodging"),
+                           "ATTRACTION": ("pa", "place_intro_attraction", "parking")}.get(category)
                     if _pk:
                         al, t, cn = _pk
                         joins[al] = f"LEFT JOIN {t} {al} USING (content_id)"
@@ -224,7 +224,7 @@ def search_places(
                     "+ (l.mapy - %(ay)s)^2)")
 
     # --- max_budget (그룹 F, 티어 3 근사) ---
-    if max_budget and category == "lodging":
+    if max_budget and category == "ACCOMMODATION":
         joins["fee"] = (
             "LEFT JOIN (SELECT content_id, "
             "MIN(NULLIF(regexp_replace(roomoffseasonminfee1, '\\D', '', 'g'), '')::bigint) AS min_fee "
@@ -278,7 +278,7 @@ def _pack(rows, notes, category, anchor_xy):
         item = {
             "content_id": r["content_id"],
             "title": r["title"],
-            "category": _CTYPE_CAT.get(r["content_type_id"]),
+            "category": CTYPE_TO_CATEGORY.get(r["content_type_id"]),
             "content_type_id": r["content_type_id"],          # raw — v2 placeContentTypeId (attraction 12/14 구분)
             "copyright_div_cd": r["cpyrht_div_cd"] or "",      # v2 placeCopyrightDivCd
             "addr1": r["addr1"] or "",
