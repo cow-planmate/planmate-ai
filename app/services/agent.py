@@ -6,7 +6,8 @@
   1. 요청 → ToolContext(region/signgu/exclude_ids/seed) + 프롬프트(SYSTEM + 컨텍스트)
   2. 루프: gemini.generate(tools) → function_call 있으면 run_tool → 되먹임 → 반복
            (가드: MAX_ITERS / 툴별 예산 / (툴,인자) dedup / 데드라인)
-  3. 툴콜 없음 or 캡 도달 → tools 없이 response_schema=LlmOutput 로 최종 구조화 출력 강제
+  3. 툴콜 없음 or 캡 도달 → _final_output() 으로 최종 op 리스트 (모드 = settings.final_output_mode,
+     기본 json = 자유 JSON + 우리 검증. `17` E5-1 실측)
   4. assemble(llm_output, req, caches) → ChatbotResponse
 """
 
@@ -18,6 +19,7 @@ import time
 
 from google.genai import types
 
+from app.config import settings
 from app.models import ChatbotRequest, ChatbotResponse, LlmOutput
 from app.prompts import SYSTEM, build_context
 from app.services import gemini
@@ -29,6 +31,58 @@ log = logging.getLogger(__name__)
 MAX_ITERS = 6
 BUDGET = {"search_places": 4, "generate_itinerary": 2}
 DEADLINE_S = 30.0
+
+_FINAL_NUDGE = (
+    "이제 최종 결과를 낸다. 더 이상 search_places / generate_itinerary 는 부르지 마라.\n"
+    "- search_places 후보를 받았으면 createBlock/updateBlock 의 placeId 에 그 content_id 를 반드시 채워라.\n"
+    "- userMessage 는 actions 가 실제로 한 것만 말해라 (안 바꿨으면 바꿨다고 하지 마라)."
+)
+
+# ── function 모드: 최종 출력을 받는 submit_plan 선언 (LlmOutput 미러) ──────────
+_OP_SCHEMA = types.Schema(
+    type=types.Type.OBJECT,
+    required=["op"],
+    properties={
+        "op": types.Schema(type=types.Type.STRING, enum=[
+            "createBlock", "updateBlock", "deleteBlock", "createTimeTable",
+            "updateTimeTable", "deleteTimeTable", "replaceDayBlocks",
+            "replacePlanBlocks", "resequenceBlocks"]),
+        "date": types.Schema(type=types.Type.STRING),
+        "blockStartTime": types.Schema(type=types.Type.STRING),
+        "blockEndTime": types.Schema(type=types.Type.STRING),
+        "blockCategory": types.Schema(type=types.Type.STRING,
+                                      enum=["ATTRACTION", "ACCOMMODATION", "RESTAURANT"]),
+        "placeId": types.Schema(type=types.Type.STRING,
+                                description="search_places/generate_itinerary 결과의 content_id. 장소를 넣거나 바꾸면 필수."),
+        "target": types.Schema(type=types.Type.OBJECT, description="편집 대상 블록 지칭", properties={
+            "blockId": types.Schema(type=types.Type.INTEGER),
+            "date": types.Schema(type=types.Type.STRING),
+            "blockStartTime": types.Schema(type=types.Type.STRING),
+            "blockCategory": types.Schema(type=types.Type.STRING),
+        }),
+        "timeTableId": types.Schema(type=types.Type.INTEGER),
+        "timeTableStartTime": types.Schema(type=types.Type.STRING),
+        "timeTableEndTime": types.Schema(type=types.Type.STRING),
+        "from": types.Schema(type=types.Type.STRING, description="generate_itinerary 호출 핸들 gen_itin:call_N"),
+        "scope": types.Schema(type=types.Type.STRING),
+    },
+)
+SUBMIT_PLAN = types.FunctionDeclaration(
+    name="submit_plan",
+    description="플랜 변경 op 리스트 + 사용자 메시지를 제출하고 턴을 마친다.",
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        required=["userMessage", "actions", "shownPlaceIds"],
+        properties={
+            "userMessage": types.Schema(type=types.Type.STRING),
+            "actions": types.Schema(type=types.Type.ARRAY, items=_OP_SCHEMA,
+                                    description="플랜을 안 바꾸면 빈 배열"),
+            "shownPlaceIds": types.Schema(type=types.Type.ARRAY,
+                                          items=types.Schema(type=types.Type.STRING),
+                                          description="이번에 추천/제시한 장소 content_id. 편집만 했으면 빈 배열"),
+        },
+    ),
+)
 
 
 def _seed() -> str:
@@ -108,22 +162,60 @@ def run(req: ChatbotRequest) -> ChatbotResponse:
                 parts=[types.Part.from_function_response(name=name, response=out)],
             ))
 
-    # 최종 구조화 출력 강제 (tools 없이)
-    final_cfg = types.GenerateContentConfig(
-        system_instruction=SYSTEM,
-        temperature=0.3,
-        response_mime_type="application/json",
-        response_schema=LlmOutput,
-    )
-    contents.append(types.Content(
-        role="user",
-        parts=[types.Part(text="이제 최종 출력을 위 스키마(JSON)로만 내라. 더 이상 툴 호출하지 마라.")],
-    ))
-    final = gemini.generate(contents, config=final_cfg)
-    llm_out: LlmOutput = final.parsed if getattr(final, "parsed", None) else LlmOutput.model_validate_json(final.text)
+    contents.append(types.Content(role="user", parts=[types.Part(text=_FINAL_NUDGE)]))
+    llm_out = _final_output(contents)
 
     return assemble(
         llm_out, req,
         gen_itin_cache=ctx.gen_itin_cache,
         search_cache=ctx.search_cache,
     )
+
+
+def _final_output(contents: list) -> LlmOutput:
+    """최종 op 리스트를 받는다. 모드 = settings.final_output_mode (E-5 실험, `17` E5-1)."""
+    mode = settings.final_output_mode
+
+    if mode == "function":
+        cfg = types.GenerateContentConfig(
+            system_instruction=SYSTEM, temperature=0.3,
+            tools=[types.Tool(function_declarations=[SUBMIT_PLAN])],
+            tool_config=types.ToolConfig(function_calling_config=types.FunctionCallingConfig(
+                mode="ANY", allowed_function_names=["submit_plan"])),
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        )
+        resp = gemini.generate(contents + [types.Content(
+            role="user", parts=[types.Part(text="submit_plan 을 호출해 최종 결과를 제출해라.")])], config=cfg)
+        fcs = _fn_calls(resp)
+        if not fcs:
+            raise RuntimeError("function 모드: submit_plan 호출 없음")
+        return LlmOutput.model_validate(dict(fcs[0].args or {}))
+
+    if mode == "json":
+        cfg = types.GenerateContentConfig(
+            system_instruction=SYSTEM, temperature=0.3,
+            response_mime_type="application/json",
+        )
+        conv = list(contents)
+        last_err = None
+        for attempt in range(2):
+            resp = gemini.generate(conv, config=cfg)
+            try:
+                return LlmOutput.model_validate_json(resp.text)
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                conv = conv + [
+                    resp.candidates[0].content,
+                    types.Content(role="user", parts=[types.Part(text=(
+                        f"방금 출력이 스키마와 안 맞음: {e}. "
+                        "userMessage(str) / actions(op 배열) / shownPlaceIds(str 배열) 로만, JSON 으로 다시 내라."))]),
+                ]
+        raise RuntimeError(f"json 모드: 2회 파싱 실패 ({last_err})")
+
+    # mode == "schema" (기본)
+    cfg = types.GenerateContentConfig(
+        system_instruction=SYSTEM, temperature=0.3,
+        response_mime_type="application/json", response_schema=LlmOutput,
+    )
+    resp = gemini.generate(contents, config=cfg)
+    return resp.parsed if getattr(resp, "parsed", None) else LlmOutput.model_validate_json(resp.text)

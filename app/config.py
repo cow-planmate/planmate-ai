@@ -20,5 +20,10 @@ class Settings(BaseSettings):
     gemini_embed_model: str = "gemini-embedding-001"
     embed_dim: int = 768
 
+    # 최종 op 출력 모드 (`17` E5-1 실측): json = 자유 JSON + 우리 검증 (기본, 9/9) /
+    #   schema = response_schema 제약 (updateBlock optional 필드 스킵 버그, 7/9) /
+    #   function = submit_plan 함수호출 (9/9, SUBMIT_PLAN 미러 유지비용). schema/function 은 폴백 스위치.
+    final_output_mode: str = "json"
+
 
 settings = Settings()

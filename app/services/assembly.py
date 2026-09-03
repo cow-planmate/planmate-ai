@@ -215,6 +215,10 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
     elif kind == "updateBlock":
         if op.target is None:
             return _drop(notes, "updateBlock: target 없음")
+        if not (op.place_id or op.block_start_time or op.block_end_time or op.date or op.block_category):
+            # target 만 있고 바꿀 필드 0 → no-op. LLM 이 검색만 하고 placeId 안 실은 경우 (E5-1).
+            # 조용히 통과시키면 userMessage 가 "바꿨다"고 거짓말 → drop + note 로 드러냄.
+            return _drop(notes, "updateBlock: 바꿀 필드 없음 (target 만) — 무시")
         b = _resolve_target(op.target, blocks, notes)
         if b is None:
             return

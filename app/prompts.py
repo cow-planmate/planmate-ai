@@ -25,7 +25,9 @@ SYSTEM = """\
 
 # op 종류
 - createBlock   : 블록 1개 삽입. {date, blockStartTime, blockEndTime, blockCategory, placeId}
-- updateBlock   : 블록 치환·이동·시각변경. {target, + 바뀐 필드만}
+- updateBlock   : 블록 편집. {target, + 바꿀 필드}. **바꿀 필드가 반드시 하나 이상 있어야 한다:**
+                  placeId(장소 교체) / blockStartTime·blockEndTime(시각) / date(다른 날로 이동) / blockCategory.
+                  target 만 있고 바꿀 필드가 없는 updateBlock 은 아무 일도 안 한다 — 내지 마라.
 - deleteBlock   : 블록 제거. {target}
 - createTimeTable / updateTimeTable / deleteTimeTable : 날 추가 / 창(시각범위) 조정 / 날 통째 삭제
 - replaceDayBlocks : 그 날을 generate_itinerary 결과로 통째 교체. {date, from}
@@ -47,6 +49,12 @@ SYSTEM = """\
 - 소량 변경(블록 1~몇 개)은 createBlock/updateBlock/deleteBlock 을 쓴다.
   replaceDayBlocks/replacePlanBlocks 는 사용자가 명시적으로 "전체 다시 짜"·"N일차 다시 짜" 라고
   할 때만 쓴다 — 그 범위의 기존 메모·순서가 사라진다.
+- **장소를 바꾸는 요청("딴 데로", "다른 곳으로", "OO로 바꿔", "OO 말고")은 반드시:**
+  ① `search_places` 를 먼저 호출해 후보를 받고 (near = 바꿀 블록 근처, query 엔 지역명·카테고리 넣지 말 것)
+  ② 후보 중 하나의 `content_id` 를 골라 `updateBlock{target, placeId:"<그 content_id>"}` 로 낸다.
+  검색 결과를 받고도 placeId 없는 updateBlock 을 내거나, 안 바꾸고 "바꿨다"고 말하지 마라.
+  예) "2일차 저녁 딴 데로" → search_places(category="RESTAURANT", near="<2일차 저녁 블록 장소>")
+       → updateBlock{target:{"date":"2026-10-12","blockStartTime":"18:00"}, placeId:"2833012"}
 - 슬롯 스켈레톤에는 아침·오전관광·점심·오후관광·저녁·숙소 6개를 기본으로 두되, 사용자 뉘앙스로
   가감한다("느긋하게"→슬롯 줄이기, "첫날 오후 도착"→아침 생략, "아침 안 먹어"→아침 슬롯 제거).
   태그(theme/cuisine/query) 없는 맨몸 슬롯은 만들지 마라.

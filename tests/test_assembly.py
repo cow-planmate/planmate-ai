@@ -105,6 +105,18 @@ def test_create_block_on_occupied_slot_dropped(db):
     assert len(slot) == 1 and slot[0].block_id == 811 and slot[0].memo == "원본"
 
 
+# ── E5-1: target 만 있고 바꿀 필드 없는 updateBlock → drop (no-op 방지) ────
+def test_update_block_no_change_dropped(db):
+    blocks = [_block(811, 41, "18:00:00", "RESTAURANT", FOOD, memo="원본")]
+    out = LlmOutput.model_validate({
+        "userMessage": "바꿨어요", "shownPlaceIds": [],
+        "actions": [{"op": "updateBlock", "target": {"blockId": 811}}],   # placeId·시각·date 없음
+    })
+    resp = assemble(out, _req(place_blocks=blocks))
+    b = resp.plan.place_blocks[0]
+    assert b.block_id == 811 and b.place_id == FOOD and b.memo == "원본"   # 그대로
+
+
 # ── #8: 기존 날짜에 createTimeTable → drop ────────────────────────────────
 def test_create_timetable_existing_date_dropped(db):
     out = LlmOutput.model_validate({

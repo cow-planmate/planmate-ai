@@ -92,6 +92,7 @@ def test_regenerate_one_day_keeps_others():
 
 # ── 편집: pendingContext 새 블록을 자연키로 치환 ─────────────────────────
 def test_edit_pending_block():
+    # E5-1: schema 모드에선 placeId 스킵됐음. final_output_mode="json" 으로 해결 (`17` E5-1).
     pending = {
         "planFrame": {"planId": "p1", "adultCount": 2, "childCount": 0},
         "timetables": [{"timeTableId": 42, "date": "2026-10-12",
@@ -101,7 +102,7 @@ def test_edit_pending_block():
     }
     r = agent.run(_req("2일차 저녁 딴 데로 바꿔줘", pending=pending))
     assert r.plan is not None
-    din = [b for b in r.plan.place_blocks if b.block_start_time == "18:00:00"]
+    din = [b for b in r.plan.place_blocks if b.block_start_time == "18:00"]   # HH:MM canonical
     assert len(din) == 1
     assert din[0].place_id != "1128306"                     # 교체됨
     assert din[0].block_id is None
