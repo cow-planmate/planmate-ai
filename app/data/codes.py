@@ -98,3 +98,20 @@ def resolve_subtype(category: str | None, value: str | None):
     if not category or not value:
         return None
     return SUBTYPE_CODE.get(category, {}).get(value.strip())
+
+
+# lclsSystm 코드 → 한글 라벨 (userContext.preferredThemes 를 프롬프트 문장으로 변환용, 17 #6).
+# SUBTYPE_CODE 역인덱스(대표 라벨) + L1 대분류.
+_L1_LABEL = {"AC": "숙박", "EX": "체험", "FD": "음식", "HS": "역사", "LS": "레저",
+             "NA": "자연", "VE": "도시관광", "EV": "축제", "SH": "쇼핑"}
+_CODE_LABEL: dict[str, str] = dict(_L1_LABEL)
+for _cat, _m in SUBTYPE_CODE.items():
+    for _label, (_col, _code) in _m.items():
+        _CODE_LABEL.setdefault(_code, _label)   # 첫(대표) 라벨 우선
+
+
+def label_for_code(code: str | None) -> str | None:
+    """lclsSystm 코드 → 한글 라벨. 모르면 None."""
+    if not code:
+        return None
+    return _CODE_LABEL.get(code.strip()) or _CODE_LABEL.get(code.strip()[:2])

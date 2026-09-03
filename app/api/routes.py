@@ -1,9 +1,17 @@
-"""v2 용 REST 엔드포인트. Phase A 는 /health 만."""
+"""v2 용 REST 엔드포인트."""
 
-from fastapi import APIRouter, HTTPException
+from __future__ import annotations
 
+import logging
+
+from fastapi import APIRouter, Header, HTTPException
+
+from app.config import settings
 from app.db import query
+from app.models import ChatbotRequest, ChatbotResponse
+from app.services import agent
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -20,4 +28,29 @@ def health():
         )
 
 
-# TODO(Phase F): POST /api/ai/... 챗봇 엔드포인트 추가 (엔드포인트명은 Q1 확정 후)
+def _check_token(x_internal_token: str | None) -> None:
+    if x_internal_token != settings.internal_shared_secret:
+        raise HTTPException(status_code=401, detail="invalid internal token")
+
+
+@router.post("/api/chatbot", response_model=ChatbotResponse, response_model_by_alias=True)
+def chatbot(req: ChatbotRequest, x_internal_token: str | None = Header(default=None)):
+    """v2 챗봇 도메인이 호출. planContext(저장본) + 미반영 상태 → 완성 plan(14).
+
+    에러: Gemini/캐시DB 하드 실패 = 5xx (v2 가 재시도·노출 판단). "변경 없음/되물음/불가안내"는
+    200 + plan:null (17 C-4).
+    """
+    _check_token(x_internal_token)
+    try:
+        return agent.run(req)
+    except HTTPException:
+        raise
+    except RuntimeError as e:  # Gemini 키 미설정 등
+        log.exception("[chatbot] 설정 오류")
+        raise HTTPException(status_code=503, detail=f"AI 서버 설정 오류: {e}")
+    except Exception as e:  # noqa: BLE001
+        log.exception("[chatbot] 처리 실패")
+        raise HTTPException(status_code=502, detail="요청을 처리하는 중 오류가 발생했습니다.")
+
+
+# TODO(E-5): 통합 테스트 — 13 §5 케이스 자연어 → 경로/op/plan 검증

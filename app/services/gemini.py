@@ -29,7 +29,12 @@ def _get_client() -> genai.Client:
 def _is_retryable(exc: BaseException) -> bool:
     # ClientError(429) / ServerError(5xx) 만 재시도. 400/404 등은 즉시 실패.
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-    return code in (429, 500, 502, 503, 504)
+    if code not in (429, 500, 502, 503, 504):
+        return False
+    # 429 중 '일일 무료 쿼터 소진'(PerDay)은 재시도해도 소용없음 → 즉시 실패 (06 §6, 17 #8).
+    if code == 429 and ("PerDay" in str(exc) or "RequestsPerDay" in str(exc)):
+        return False
+    return True
 
 
 _retry = retry(
