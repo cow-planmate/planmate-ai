@@ -143,6 +143,7 @@ def _builder_blocks(handle: str, cache: dict[str, dict], notes: dict) -> list[Pl
         pb = PlaceBlock.model_validate(b)
         pb.block_start_time = _hm(pb.block_start_time)
         pb.block_end_time = _hm(pb.block_end_time)
+        pb.date = _norm_date(pb.date) or pb.date   # 빌더 date(LLM day_plans) 도 정규화 → replaceDayBlocks 필터 정합
         out.append(pb)
     return out
 
@@ -297,8 +298,8 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
 
     elif kind == "resequenceBlocks":
         scope = op.scope or "plan"
-        scoped = blocks if scope == "plan" else [b for b in blocks if b.date == scope]
-        if len(scoped) < 2:
+        scoped = [b for b in blocks if b.date and (scope == "plan" or b.date == scope)]
+        if len(scoped) < 2:   # date 없는 블록은 재배치서 제외 (resequence 가 date 로 그룹핑)
             return
         reordered = _resequence([b.model_dump(by_alias=True) for b in scoped])
         # 매칭 키 = (date, blockStartTime). blockId 로 하면 프리뷰 새 블록(전부 None)이
