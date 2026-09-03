@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Header, HTTPException
+from google.auth.exceptions import GoogleAuthError
 
 from app.config import settings
 from app.db import query
@@ -45,7 +46,7 @@ def chatbot(req: ChatbotRequest, x_internal_token: str | None = Header(default=N
         return agent.run(req)
     except HTTPException:
         raise
-    except RuntimeError as e:  # Gemini 키 미설정 등
+    except (RuntimeError, GoogleAuthError) as e:  # project 미설정 / ADC 없음·만료 = 설정 오류
         log.exception("[chatbot] 설정 오류")
         raise HTTPException(status_code=503, detail=f"AI 서버 설정 오류: {e}")
     except Exception as e:  # noqa: BLE001

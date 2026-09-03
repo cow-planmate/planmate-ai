@@ -11,13 +11,19 @@ import pytest
 
 @pytest.fixture(scope="session")
 def live(db):
-    """실 Gemini 호출 테스트 게이트. `PLANMATE_LIVE=1` 없으면 skip (기본 `pytest` 는 빠르고 무료)."""
+    """실 Gemini(Vertex) 호출 테스트 게이트. `PLANMATE_LIVE=1` 없으면 skip."""
     if os.environ.get("PLANMATE_LIVE") != "1":
         pytest.skip("PLANMATE_LIVE=1 아님 — 실 Gemini 테스트 skip")
     from app.config import settings
 
-    if not settings.gemini_api_key:
-        pytest.skip("GEMINI_API_KEY 없음")
+    if not settings.google_cloud_project:
+        pytest.skip("GOOGLE_CLOUD_PROJECT 없음 — Vertex ADC 설정 필요 (18 §2-3)")
+    try:
+        import google.auth
+
+        google.auth.default()   # ADC 자격증명 존재/유효 확인
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"ADC 없음 — gcloud auth application-default login 필요 ({e})")
 
 
 @pytest.fixture(scope="session")

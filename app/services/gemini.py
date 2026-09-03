@@ -20,25 +20,30 @@ _client: genai.Client | None = None
 def _get_client() -> genai.Client:
     global _client
     if _client is None:
-        if not settings.gemini_api_key:
-            raise RuntimeError("GEMINI_API_KEY 미설정 (.env)")
-        _client = genai.Client(api_key=settings.gemini_api_key)
+        if not settings.google_cloud_project:
+            raise RuntimeError("GOOGLE_CLOUD_PROJECT 미설정 (.env) — Vertex ADC 인증 필요")
+        _client = genai.Client(
+            vertexai=True,
+            project=settings.google_cloud_project,
+            location=settings.google_cloud_location,
+        )
     return _client
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    # ServerError(5xx) 만 재시도. 400/404 즉시 실패.
-    # 429 는 전부 재시도 안 함 (17 #8, C-9 연장): 일일쿼터(PerDay)든 분당(RPM)이든
-    # 에이전트 데드라인(~30초) 안에 안 풀림 → 6회 지수백오프가 데드라인을 통째로 잡아먹음.
-    # 429 는 곧장 상위로 던져 502/되물음으로 끝내는 게 낫다.
+    # Vertex AI (`18` 전환): 429 = RPM/TPM 스로틀(몇 초면 회복) → 짧게 재시도.
+    # 5xx = 일시 서버 오류 → 재시도. 400/404 = 즉시 실패.
+    # (AI Studio 무료의 일일쿼터 429 fast-fail = 폐기, `17` C-9)
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-    return code in (500, 502, 503, 504)
+    return code in (429, 500, 502, 503, 504)
 
 
 _retry = retry(
     retry=retry_if_exception(_is_retryable),
-    wait=wait_exponential(multiplier=2, min=2, max=15),
-    stop=stop_after_attempt(4),
+    # 짧은 백오프: 1→2→4초, 재시도 2회. 총 대기 ~3초 << 에이전트 데드라인 30초.
+    # 지속 스로틀(2회로 안 풀림)이면 상위로 던져 502 → v2 판단. 정밀값은 E-5 튜닝(`17` #3).
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    stop=stop_after_attempt(3),
     reraise=True,
 )
 

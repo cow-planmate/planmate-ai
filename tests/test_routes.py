@@ -66,7 +66,17 @@ def test_ok_plan_null_is_200(monkeypatch):
 # ── 에러 매핑 ──────────────────────────────────────────────────────────────
 def test_runtime_error_503(monkeypatch):
     def boom(req):
-        raise RuntimeError("GEMINI_API_KEY 미설정")
+        raise RuntimeError("GOOGLE_CLOUD_PROJECT 미설정")
+    _mock_agent(monkeypatch, boom)
+    assert client.post("/api/chatbot", json=_BODY, headers=_TOKEN).status_code == 503
+
+
+def test_auth_error_503(monkeypatch):
+    # ADC 없음/만료 = 설정 오류 → 503 (502 아님)
+    from google.auth.exceptions import DefaultCredentialsError
+
+    def boom(req):
+        raise DefaultCredentialsError("no ADC")
     _mock_agent(monkeypatch, boom)
     assert client.post("/api/chatbot", json=_BODY, headers=_TOKEN).status_code == 503
 
