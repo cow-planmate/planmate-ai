@@ -147,6 +147,9 @@ class ChatbotRequest(BaseModel):
     pending_context: PlanState | None = Field(default=None, alias="pendingContext")  # 프론트 working copy
     shown_places: list[ShownPlaceRef] | None = Field(default=None, alias="shownPlaces")
     user_context: UserContext = Field(alias="userContext")
+    # 직전 사용자 발화 최근 N개(오래된→최신, 현재 message 제외). 검색 뉘앙스 연속성용.
+    # 프론트 저작·바운드(≤3), AI 답변 텍스트는 안 실림. 안 오면 []. (12 §, 13 §1-1, 프론트 15)
+    recent_messages: list[str] = Field(default_factory=list, alias="recentMessages")
 
 
 class ChatbotResponse(BaseModel):
