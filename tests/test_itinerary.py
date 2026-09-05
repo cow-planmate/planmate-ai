@@ -1,11 +1,11 @@
 """generate_itinerary 빌더 통합 테스트 — 로컬 DB + 부산(regn 26) subset.
 
-`query` 슬롯은 embed_query 를 목킹 (Gemini API 콜 없음). 대부분 슬롯은 query 없이.
+`query` 슬롯은 embed_query/embed_queries 를 목킹 (Gemini API 콜 없음). 대부분 슬롯은 query 없이.
 """
 
 import pytest
 
-from app.services import candidates
+from app.services import candidates, gemini
 from app.services.itinerary import generate_itinerary
 
 pytestmark = pytest.mark.usefixtures("db")
@@ -172,6 +172,8 @@ def test_query_slot_mocked(monkeypatch):
               "WHERE l.ldong_regn_cd='26' AND l.content_type_id='39' LIMIT 1")[0]
     vec = [float(x) for x in row["vec"].strip("[]").split(",")]
     monkeypatch.setattr(candidates, "embed_query", lambda _t: vec)
+    # generate_itinerary는 루프 시작 전에 슬롯 query 를 배치로 미리 임베딩한다(D12) — 그 경로도 목킹.
+    monkeypatch.setattr(gemini, "embed_queries", lambda texts: [vec for _ in texts])
 
     r = generate_itinerary(
         day_plans=[_day("2026-10-11", _slot("18:00", "19:30", "RESTAURANT", query="분위기 좋은"))],

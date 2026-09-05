@@ -79,6 +79,15 @@ def embed_query(text: str) -> list[float]:
     return _embed([text], "RETRIEVAL_QUERY")[0]
 
 
+def embed_queries(texts: list[str]) -> list[list[float]]:
+    """검색용 임베딩 배치 (여러 문장을 API 호출 1번으로). generate_itinerary 가 슬롯마다
+    embed_query 를 따로 부르면 분당 요청수 쿼터(429 RESOURCE_EXHAUSTED)에 몰린다
+    (08_통합_E2E_테스트_기록.md 발견#4) — 루프 시작 전 한 번에 묶어 호출 수를 줄인다."""
+    if not texts:
+        return []
+    return _embed(texts, "RETRIEVAL_QUERY")
+
+
 @_retry
 def generate(contents, *, config: types.GenerateContentConfig | None = None):
     """LLM 호출 (Phase E). 얇은 패스스루."""

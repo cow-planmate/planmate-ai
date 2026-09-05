@@ -24,6 +24,7 @@ import itertools
 import math
 
 from app.data.regions import resolve_region
+from app.services import gemini
 from app.services.candidates import search_places
 
 # slot category = search_places 반환 category = v2 BlockCategory (ATTRACTION/ACCOMMODATION/RESTAURANT).
@@ -64,12 +65,15 @@ def _block(pick: dict, slot: dict, date: str) -> dict:
 
 def _search_slot(
     slot: dict, region, signgu: list[str] | None, near: str | None, exclude_ids: list[str], seed: str,
+    query_vec: list[float] | None = None,
 ) -> tuple[dict, list[str]]:
     """슬롯 1개 검색 + 0건이면 점진 완화 (D8-B).
 
     완화 사다리: 전체 → query 뺌 → category+scope 만 → (signgu 있으면) 지리 넓히기(signgu 뺌).
     지리를 맨 아래 두는 이유: "다른 도시" 가 "원한 분위기 아님" 보다 큰 불만.
     (`near` 는 WHERE 아닌 ORDER BY 라 0건 여부에 영향 없음 → 끝까지 유지.)
+    query_vec: 호출측이 미리 배치로 임베딩해 둔 이 슬롯 query 의 벡터(D12) — 있으면 search_places
+    가 또 embed_query 를 부르지 않는다. query 를 쓰는 시도(첫 번째)에만 의미가 있다.
     반환: (search_places 결과, 성공한 시도에서 떨군 슬롯 키 리스트. 지리 넓혔으면 "area" 포함).
     """
     subtype = slot.get("theme") or slot.get("cuisine")
@@ -77,7 +81,7 @@ def _search_slot(
     constrained = [k for k in ("theme", "cuisine", "query", "amenities", "max_budget") if slot.get(k)]
     # (search_places 파라미터, 이 시도에서 떨군 슬롯 키)
     attempts: list[tuple[dict, list[str]]] = [
-        (dict(subtype=subtype, query=slot.get("query"), amenities=slot.get("amenities"),
+        (dict(subtype=subtype, query=slot.get("query"), query_vec=query_vec, amenities=slot.get("amenities"),
               max_budget=budget, signgu=signgu), []),
         (dict(subtype=subtype, query=None, amenities=slot.get("amenities"),
               max_budget=budget, signgu=signgu), ["query"] if slot.get("query") else []),
@@ -108,6 +112,27 @@ def _search_slot(
     return result, dropped
 
 
+def _embed_slot_queries(day_plans: list[dict]) -> dict[str, list[float]]:
+    """day_plans 전체 슬롯의 query 텍스트를 한 번의 배치 호출로 미리 임베딩(D12).
+
+    슬롯마다(최대 십수 개) embed_query 를 따로 부르면 분당 요청수 쿼터에 몰려 429
+    RESOURCE_EXHAUSTED 가 나고, 재시도가 반복 실패하면 그 슬롯은 semantic 랭킹 없이
+    조용히 진행된다(08_통합_E2E_테스트_기록.md 발견#4 실측). 호출 수를 슬롯 수 → 1회로
+    줄여 쿼터 자체를 피한다. 실패하면 빈 dict — 슬롯별 search_places 의 기존 폴백
+    (embed 없이 진행 + notes 헤지)이 그대로 처리한다.
+    """
+    texts = list(dict.fromkeys(
+        slot["query"] for day in day_plans for slot in day.get("slots", []) if slot.get("query")
+    ))
+    if not texts:
+        return {}
+    try:
+        vecs = gemini.embed_queries(texts)
+    except Exception:  # noqa: BLE001
+        return {}
+    return dict(zip(texts, vecs))
+
+
 def generate_itinerary(
     *,
     day_plans: list[dict],
@@ -123,6 +148,7 @@ def generate_itinerary(
     if rnote == "unresolved":
         return {"blocks": [], "notes": {"region": "unresolved"}}
 
+    query_vecs = _embed_slot_queries(day_plans)
     used: list[str] = list(exclude_ids or [])
     blocks: list[dict] = []
     notes: dict = {}
@@ -143,7 +169,8 @@ def generate_itinerary(
                 continue
 
             near = slot.get("near") or prev_id or day_anchor
-            result, dropped = _search_slot(slot, region, signgu, near, used, seed)
+            result, dropped = _search_slot(slot, region, signgu, near, used, seed,
+                                            query_vec=query_vecs.get(slot.get("query")))
 
             if not result["places"]:
                 notes[ref] = {"empty": True}

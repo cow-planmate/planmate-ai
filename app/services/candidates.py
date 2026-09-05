@@ -94,6 +94,7 @@ def search_places(
     subtype: str | None = None,
     amenities: list[str] | None = None,
     query: str | None = None,
+    query_vec: list[float] | None = None,
     strict: bool = False,
     sort_by: str = "relevance",
     near: str | None = None,
@@ -200,12 +201,18 @@ def search_places(
 
     # --- query → 임베딩 (그룹 A) ---
     if query:
-        try:
-            qvec = embed_query(query)
-            p["qvec"] = _vec_literal(qvec)
+        if query_vec is not None:
+            # 호출측(generate_itinerary)이 슬롯 전체를 배치로 미리 임베딩해 넘긴 경우 —
+            # 여기서 또 embed_query 를 부르면 배치로 줄인 의미가 없다.
+            p["qvec"] = _vec_literal(query_vec)
             ord_embed = "l.embedding <=> %(qvec)s::vector"
-        except Exception:  # noqa: BLE001
-            notes["query_embed"] = "failed"
+        else:
+            try:
+                qvec = embed_query(query)
+                p["qvec"] = _vec_literal(qvec)
+                ord_embed = "l.embedding <=> %(qvec)s::vector"
+            except Exception:  # noqa: BLE001
+                notes["query_embed"] = "failed"
 
     # --- 거리 (그룹 E) ---
     axy = None
