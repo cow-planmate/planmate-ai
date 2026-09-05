@@ -141,6 +141,12 @@ def run(req: ChatbotRequest) -> ChatbotResponse:
             break  # 모델이 최종 답으로 감
 
         contents.append(resp.candidates[0].content)
+        # Gemini 는 한 턴의 function_call N개에 대한 응답을 Content 1개 안에 part N개로
+        # 묶어서 받아야 한다("function response parts 개수가 function call parts 개수와
+        # 안 맞는다" 400) — LLM 이 병렬로 여러 툴을 부르면(예: 빈 슬롯 여러 개를 한 번에
+        # 채우려 search_places 를 동시에 여러 번) 호출별로 Content 를 따로 append 하던
+        # 기존 코드가 이 계약을 깨서 재현됨(P2 "3일차 오후가 비었는데 채워줘" 실측).
+        response_parts: list[types.Part] = []
         for fc in calls:
             name = fc.name
             args = dict(fc.args or {})
@@ -157,10 +163,8 @@ def run(req: ChatbotRequest) -> ChatbotResponse:
                 except Exception as e:  # noqa: BLE001
                     log.exception("[agent] 툴 실행 실패 %s", name)
                     out = {"error": f"툴 실행 오류: {e}"}
-            contents.append(types.Content(
-                role="user",
-                parts=[types.Part.from_function_response(name=name, response=out)],
-            ))
+            response_parts.append(types.Part.from_function_response(name=name, response=out))
+        contents.append(types.Content(role="user", parts=response_parts))
 
     contents.append(types.Content(role="user", parts=[types.Part(text=_FINAL_NUDGE)]))
     llm_out = _final_output(contents)
