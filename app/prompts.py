@@ -23,16 +23,29 @@ SYSTEM = """\
   "actions": [op, ...],            // 플랜을 안 바꾸면 []
   "shownPlaceIds": [contentId, ...] }  // 이번에 '추천/제시'한 장소들. 편집만 했으면 []
 
-# op 종류
-- createBlock   : 블록 1개 삽입. {date, blockStartTime, blockEndTime, blockCategory, placeId}
-- updateBlock   : 블록 편집. {target, + 바꿀 필드}. **바꿀 필드가 반드시 하나 이상 있어야 한다:**
-                  placeId(장소 교체) / blockStartTime·blockEndTime(시각) / date(다른 날로 이동) / blockCategory.
-                  target 만 있고 바꿀 필드가 없는 updateBlock 은 아무 일도 안 한다 — 내지 마라.
-- deleteBlock   : 블록 제거. {target}
-- createTimeTable / updateTimeTable / deleteTimeTable : 날 추가 / 창(시각범위) 조정 / 날 통째 삭제
-- replaceDayBlocks : 그 날을 generate_itinerary 결과로 통째 교체. {date, from}
-- replacePlanBlocks : 플랜 전체를 통째 교체. {from}
-- resequenceBlocks : 장소는 그대로 두고 동선(순서·시각)만 재정렬. {scope: "plan" 또는 "YYYY-MM-DD"}
+# op 종류 (필드 사전 — 여기 적힌 필드를 하나라도 빠뜨리면 그 op 전체가 조용히 무시된다.
+# 무시돼도 에러가 안 나고 유저에게 아무 표시도 안 되니, "일부는 대충 채워도 되겠지"라고
+# 절대 생각하지 마라 — 아래 필수 필드는 전부, 매번 채워라.)
+- createBlock      : 블록 1개 삽입. **전부 필수** — {date, blockStartTime, blockEndTime, blockCategory, placeId}
+- updateBlock      : 블록 편집. target 필수 + 바뀐 필드 중 **최소 1개 필수**:
+                     {target, placeId(장소 교체) / blockStartTime·blockEndTime(시각) / date(다른 날로 이동) / blockCategory}
+                     target 만 있고 바뀐 필드가 없는 updateBlock 은 아무 일도 안 한다 — 내지 마라.
+- deleteBlock      : 블록 제거. **필수** — {target}
+- createTimeTable  : 날짜 하나를 새로 추가한다. **세 필드 다 필수** — {date, timeTableStartTime, timeTableEndTime}.
+                     ⚠️ timeTableStartTime/timeTableEndTime 을 빼먹으면 이 op 전체가 조용히 무시되고,
+                     그 날짜에 넣으려던 블록들도 붙을 곳이 없어져 같이 사라진다("4일차 추가해줘" 같은
+                     요청이 겉으로는 성공한 것처럼 보이고 실제로는 통째로 유실된 사고 실측됨).
+                     **아직 없는 새 날짜에 블록을 채우려면(createBlock 이든 replaceDayBlocks 든), 그
+                     블록들보다 반드시 먼저(같은 턴 안에서) 이 op로 그 날짜부터 만들어라.**
+- updateTimeTable  : 기존 날짜의 시각 창 조정. timeTableId 필수 + timeTableStartTime/timeTableEndTime 중
+                     **최소 1개 필수** — {timeTableId, timeTableStartTime?, timeTableEndTime?}
+- deleteTimeTable  : 날짜를 통째 삭제(그 날의 블록도 같이 삭제된다). **필수** — {timeTableId}
+- replaceDayBlocks : **이미 존재하는** 날의 블록을 generate_itinerary 결과로 통째 교체한다(대체이지
+                     신규 추가가 아니다 — 그 날짜가 아직 없으면 먼저 createTimeTable 로 만들어라).
+                     **둘 다 필수** — {date, from}
+- replacePlanBlocks: 플랜 전체 블록을 통째 교체. **필수** — {from}
+- resequenceBlocks : 장소는 그대로 두고 동선(순서·시각)만 재정렬. scope 는 선택(기본값 "plan") —
+                     {scope: "plan" 또는 "YYYY-MM-DD"}
 
 # 블록 지칭 (target / createBlock 참조)
 - 플랜에 이미 저장된 블록 = 그 blockId 를 쓴다.  target: {"blockId": 812}
