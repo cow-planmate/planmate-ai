@@ -268,7 +268,15 @@ def _batch_dates(ops: list[Op]) -> set[str]:
 
 
 def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
-              notes: dict, gen_cache: dict[str, dict], batch_dates: set[str]) -> None:
+              notes: dict, gen_cache: dict[str, dict], batch_dates: set[str],
+              touched: list[tuple[PlaceBlock, str]]) -> None:
+    """op 하나를 blocks/timetables 에 적용한다. 겹침 회피는 여기서 바로 하지 않고
+    `touched` 에 등록만 해둔다 — 이 시점의 blocks 는 같은 턴의 다른 op 가 아직 반영되기
+    전일 수 있어(예: 이 op 가 만든 블록과 겹치는 블록을 뒤따르는 op 가 치워줄 예정),
+    그 자리에서 판단하면 "곧 비워질 자리"를 "이미 찬 자리"로 오판한다(08_통합_E2E_
+    테스트_기록.md 발견#7). 실제 겹침 해소는 턴의 모든 op 를 다 적용한 뒤 `assemble()`
+    이 `_resolve_overlaps_final()` 로 한 번에 처리한다.
+    """
     kind = op.op
 
     if kind == "createBlock":
@@ -278,27 +286,19 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
         if not h:
             return _drop(notes, f"createBlock: contentId {op.place_id} 캐시에 없음")
         cat = CTYPE_TO_CATEGORY.get(h["place_content_type_id"], op.block_category)
-        start, end = op.block_start_time, op.block_end_time
-        tt = next((t for t in timetables if t.date == op.date), None)
-        siblings = [b for b in blocks if b.date == op.date]
-        resolved = (None if op.date in batch_dates else
-                    _resolve_overlap(start, end, tt.time_table_start_time if tt else "00:00", siblings))
-        if resolved:
-            start, end = resolved
-            if tt is not None and _to_min(end) > _to_min(tt.time_table_end_time):
-                tt.time_table_end_time = end
-            notes.setdefault("overlap_adjusted", []).append(
-                f"'{h['place_name']}' 일정이 기존 일정과 겹쳐 {op.block_start_time}에서 {start}로 조정했어요.")
-        blocks.append(PlaceBlock(
+        nb = PlaceBlock(
             block_id=None, date=op.date,
-            block_start_time=start, block_end_time=end,
+            block_start_time=op.block_start_time, block_end_time=op.block_end_time,
             block_category=cat, place_id=op.place_id,
             place_name=h["place_name"], place_address=h["place_address"],
             place_content_type_id=h["place_content_type_id"],
             place_copyright_div_cd=h["place_copyright_div_cd"],
             place_thumbnail_url=h["place_thumbnail_url"],
             latitude=h["latitude"], longitude=h["longitude"],
-        ))
+        )
+        blocks.append(nb)
+        if op.date not in batch_dates:
+            touched.append((nb, op.block_start_time))
 
     elif kind == "updateBlock":
         if op.target is None:
@@ -335,16 +335,7 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
             b.date = op.date
             b.time_table_id = None   # 다른 날 → v2 가 date 로 재연결
         if time_or_date_changed and b.date not in batch_dates:
-            tt = next((t for t in timetables if t.date == b.date), None)
-            siblings = [x for x in blocks if x.date == b.date and x is not b]
-            resolved = _resolve_overlap(b.block_start_time, b.block_end_time,
-                                         tt.time_table_start_time if tt else "00:00", siblings)
-            if resolved:
-                b.block_start_time, b.block_end_time = resolved
-                if tt is not None and _to_min(b.block_end_time) > _to_min(tt.time_table_end_time):
-                    tt.time_table_end_time = b.block_end_time
-                notes.setdefault("overlap_adjusted", []).append(
-                    f"'{b.place_name}' 일정이 기존 일정과 겹쳐 {original_start}에서 {b.block_start_time}로 조정했어요.")
+            touched.append((b, original_start))
         if op.block_category and not cat_from_place:
             b.block_category = op.block_category
 
@@ -421,6 +412,55 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
                 b.place_address = r.get("placeAddress")
                 b.latitude = r.get("latitude")
                 b.longitude = r.get("longitude")
+
+
+def _synthesize_missing_timetables(blocks: list[PlaceBlock], timetables: list[Timetable], notes: dict) -> None:
+    """모든 op 적용 후, blocks 에 등장하는 date 가 실제로 timetables 에 있는지 최종 한 번 검증한다
+    (겹침회피와 같은 원칙 — op 하나하나 방어하지 말고, 다 적용한 뒤 최종 상태를 검증).
+
+    LLM 이 createTimeTable 을 빼먹거나 필수 필드(시각) 없이 내서 조용히 drop 되면(`_apply_op`
+    "필수 필드 누락"), 그 뒤 createBlock/replaceDayBlocks 는 타임테이블 존재를 확인하지 않고
+    블록을 그대로 채워 넣어 v2 에 붙을 곳 없는 고아 블록이 생긴다 — [반영]이 success:true 로
+    응답하고도 그 블록들이 조용히 유실된다(08_통합_E2E_테스트_기록.md 발견#11, T8 "4일차 추가해서
+    채워줘" 실측). 없는 날짜는 그 날짜 블록들의 시각 범위로 타임테이블을 자동 합성해 끼워 넣는다 —
+    어떤 op 조합으로 생겼든 여기서 한 번에 잡힌다.
+    """
+    known_dates = {t.date for t in timetables}
+    by_date: dict[str, list[PlaceBlock]] = {}
+    for b in blocks:
+        if b.date is None or b.date in known_dates:
+            continue
+        by_date.setdefault(b.date, []).append(b)
+
+    for date, day_blocks in by_date.items():
+        start = min(_to_min(b.block_start_time) for b in day_blocks)
+        end = max(_to_min(b.block_end_time) for b in day_blocks)
+        timetables.append(Timetable(
+            time_table_id=None, date=date,
+            time_table_start_time=_from_min(start), time_table_end_time=_from_min(end),
+        ))
+        notes.setdefault("timetable_synthesized", []).append(date)
+
+
+def _resolve_overlaps_final(touched: list[tuple[PlaceBlock, str]], blocks: list[PlaceBlock],
+                             timetables: list[Timetable], notes: dict) -> None:
+    """턴의 모든 op 가 다 적용된 뒤, 한 번에 겹침을 해소한다(§5-8-1, 발견#7). `touched`는
+    이번 턴에 생성/시각·날짜 변경된 블록만(배치로 잡힌 날짜는 `_apply_op`에서 이미 제외).
+    각 블록을 그 시점의 최종 blocks 로 판단하므로, 같은 턴의 다른 op 가 만들어낸 결과까지
+    반영된 상태에서 검사한다 — 처리 순서(op 순서)에 따라 앞서 조정된 블록이 뒤 블록의
+    siblings 에 들어가지만, `_batch_dates()` 가 같은 날짜를 2번 이상 겨냥하는 케이스를 이미
+    걸러내므로 touched 안에서 같은 날짜가 중복되는 일은 없다(교착 없음)."""
+    for b, original_start in touched:
+        tt = next((t for t in timetables if t.date == b.date), None)
+        siblings = [x for x in blocks if x.date == b.date and x is not b]
+        resolved = _resolve_overlap(b.block_start_time, b.block_end_time,
+                                     tt.time_table_start_time if tt else "00:00", siblings)
+        if resolved:
+            b.block_start_time, b.block_end_time = resolved
+            if tt is not None and _to_min(b.block_end_time) > _to_min(tt.time_table_end_time):
+                tt.time_table_end_time = b.block_end_time
+            notes.setdefault("overlap_adjusted", []).append(
+                f"'{b.place_name}' 일정이 기존 일정과 겹쳐 {original_start}에서 {b.block_start_time}로 조정했어요.")
 
 
 # ── shownPlaces (rich) ──────────────────────────────────────────────────────
@@ -511,8 +551,11 @@ def assemble(
 
     normalized_ops = _normalize_ops(llm.actions, notes)
     batch_dates = _batch_dates(normalized_ops)
+    touched: list[tuple[PlaceBlock, str]] = []
     for op in normalized_ops:
-        _apply_op(op, blocks, timetables, notes, gen_itin_cache, batch_dates)
+        _apply_op(op, blocks, timetables, notes, gen_itin_cache, batch_dates, touched)
+    _synthesize_missing_timetables(blocks, timetables, notes)
+    _resolve_overlaps_final(touched, blocks, timetables, notes)
 
     # 겹침 자동 회피(§5-8-1) 안내 — LLM 최종 출력 이후에 조립 레이어가 결정하는 일이라
     # LLM 은 이걸 모른다. userMessage 에 직접 덧붙인다(새 wire 필드 없음).

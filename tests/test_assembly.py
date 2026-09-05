@@ -227,6 +227,34 @@ def test_batch_date_move_skips_overlap_avoidance(db):
     assert "겹쳐" not in resp.user_message
 
 
+# ── 발견#7: 같은 턴의 협조적 멀티op — 겹침 판정은 턴이 다 끝난 최종 상태로 해야 ────
+# 실서버 S6("2일차에 해동용궁사 넣어줘")에서 LLM이 createBlock(절, 15:00-17:00) +
+# updateBlock(박물관, 15:00-17:30 → 17:00-18:00)을 같은 턴에 냈다. op를 순서대로
+# 처리하며 그 자리에서 겹침을 판정하면, createBlock 처리 시점엔 박물관이 아직 안 밀린
+# 옛 시각(15:00-17:30)이라 "자리 없음"으로 오판해 절을 저녁 뒤(19:30-21:30)로 밀어버렸다
+# (08_통합_E2E_테스트_기록.md 발견#7). 이 케이스는 `_batch_dates()`에 안 걸린다 — blockId로
+# 지칭하는 updateBlock은 target.date가 비어 있어 날짜 카운트에 안 잡히기 때문. 턴을 다
+# 적용한 뒤 최종 상태로 한 번만 판정하면, 박물관이 이미 17:00로 옮겨간 뒤라 절의
+# 15:00-17:00은 애초에 안 겹친다 — 재배치도 헤지 문구도 없어야 한다.
+def test_coordinated_multi_op_overlap_resolved_against_final_state(db):
+    blocks = [_block(900, 41, "15:00:00", "ATTRACTION", ATTR_B, end="17:30:00")]
+    out = LlmOutput.model_validate({
+        "userMessage": "절 추가하고 박물관도 옮겼어요", "shownPlaceIds": [],
+        "actions": [
+            {"op": "createBlock", "date": "2026-10-11", "blockStartTime": "15:00:00",
+             "blockEndTime": "17:00:00", "blockCategory": "ATTRACTION", "placeId": ATTR_A},
+            {"op": "updateBlock", "target": {"blockId": 900},
+             "blockStartTime": "17:00:00", "blockEndTime": "18:00:00"},
+        ],
+    })
+    resp = assemble(out, _req(place_blocks=blocks))
+    temple = next(b for b in resp.plan.place_blocks if b.place_id == ATTR_A)
+    museum = next(b for b in resp.plan.place_blocks if b.block_id == 900)
+    assert temple.block_start_time == "15:00" and temple.block_end_time == "17:00"
+    assert museum.block_start_time == "17:00" and museum.block_end_time == "18:00"
+    assert "겹쳐" not in resp.user_message
+
+
 # ── E5-1: target 만 있고 바꿀 필드 없는 updateBlock → drop (no-op 방지) ────
 def test_update_block_no_change_dropped(db):
     blocks = [_block(811, 41, "18:00:00", "RESTAURANT", FOOD, memo="원본")]
@@ -349,6 +377,42 @@ def test_replace_day_blocks(db):
     d2 = [b for b in resp.plan.place_blocks if b.date == "2026-10-12"]
     assert len(d1) == 1 and d1[0].block_id == 811 and d1[0].memo == "1일차"   # 1일차 그대로
     assert len(d2) == 1 and d2[0].block_id is None and d2[0].place_id == FOOD  # 2일차 교체 (메모 소멸 = 의도)
+
+
+# ── 발견#11 — createTimeTable이 필수 필드 없이 드롭된 뒤 replaceDayBlocks가
+#    새 날짜에 고아 블록을 채워도, 최종적으로 타임테이블이 자동 합성돼야 한다 ────
+# 실서버 T8("4일차 추가해서 채워줘")에서 LLM이 createTimeTable(시각 없음, 드롭됨) +
+# replaceDayBlocks(신규 날짜)를 같이 냈다. replaceDayBlocks는 타임테이블 존재를 확인하지
+# 않아, 응답엔 블록이 다 보이는데 plan.timetables엔 그 날짜가 없는 고아 블록이 생겼다 —
+# v2가 [반영]을 success:true로 응답하고도 조용히 유실시킴(08_통합_E2E_테스트_기록.md 발견#11).
+def test_new_day_without_timetable_gets_synthesized(db):
+    blocks = [_block(811, 41, "10:00:00", "ATTRACTION", ATTR_A, memo="1일차")]
+    gen_cache = {"gen_itin:call_1": {"blocks": [
+        {"date": "2026-10-13", "blockStartTime": "09:00", "blockEndTime": "10:00",
+         "blockCategory": "RESTAURANT", "placeId": FOOD, "placeName": "아침",
+         "placeContentTypeId": "39", "placeAddress": "부산", "placeThumbnailUrl": "",
+         "placeCopyrightDivCd": "", "latitude": 35.1, "longitude": 129.0},
+        {"date": "2026-10-13", "blockStartTime": "11:00", "blockEndTime": "13:00",
+         "blockCategory": "ATTRACTION", "placeId": ATTR_B, "placeName": "관광",
+         "placeContentTypeId": "12", "placeAddress": "부산", "placeThumbnailUrl": "",
+         "placeCopyrightDivCd": "", "latitude": 35.1, "longitude": 129.0},
+    ], "notes": {}}}
+    out = LlmOutput.model_validate({
+        "userMessage": "3일차 추가해서 채워드렸습니다", "shownPlaceIds": [],
+        "actions": [
+            # createTimeTable: 필수 필드(시각) 없이 내서 드롭되는 상황 재현
+            {"op": "createTimeTable", "date": "2026-10-13"},
+            {"op": "replaceDayBlocks", "date": "2026-10-13", "from": "gen_itin:call_1"},
+        ],
+    })
+    resp = assemble(out, _req(place_blocks=blocks), gen_itin_cache=gen_cache)
+
+    tt = [t for t in resp.plan.timetables if t.date == "2026-10-13"]
+    assert len(tt) == 1, "새 날짜 타임테이블이 자동 합성돼야 한다 — 없으면 고아 블록으로 유실됨"
+    assert tt[0].time_table_start_time == "09:00" and tt[0].time_table_end_time == "13:00"
+
+    d3 = [b for b in resp.plan.place_blocks if b.date == "2026-10-13"]
+    assert len(d3) == 2   # 신규 블록도 정상 유지(고아로 안 사라짐)
 
 
 # ── dropped op — 없는 blockId 참조는 조용히 무시 ──────────────────────────
