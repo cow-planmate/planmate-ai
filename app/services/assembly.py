@@ -104,6 +104,67 @@ def _to_min(hms: str | None) -> int:
     return int(p[0]) * 60 + int(p[1])
 
 
+def _from_min(m: int) -> str:
+    m = max(0, min(m, 24 * 60 - 1))
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def _overlaps(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+    return a_start < b_end and b_start < a_end
+
+
+def _gaps(day_start: int, ranges: list[tuple[int, int]]) -> list[tuple[int, int | None]]:
+    """day_start 이후, 정렬된 ranges(자기 자신 제외) 사이의 빈 구간들. 마지막 원소는
+    (x, None) = 그날 마지막 블록 뒤 무제한 구간 — 창 확장으로 항상 자리를 만들 수 있다."""
+    gaps: list[tuple[int, int | None]] = []
+    cursor = day_start
+    for bs, be in ranges:
+        if bs > cursor:
+            gaps.append((cursor, bs))
+        cursor = max(cursor, be)
+    gaps.append((cursor, None))
+    return gaps
+
+
+def _nearest_fit(desired_start: int, duration: int, gaps: list[tuple[int, int | None]]) -> int:
+    """desired_start 에 가장 가까우면서 duration 이 들어갈 수 있는 지점. 동률이면 더 늦은 쪽(§5-8-1)."""
+    best_start: int | None = None
+    best_dist: int | None = None
+    for gap_start, gap_end in gaps:
+        if gap_end is not None and gap_end - gap_start < duration:
+            continue
+        upper = (gap_end - duration) if gap_end is not None else max(desired_start, gap_start)
+        candidate = min(max(desired_start, gap_start), upper)
+        dist = abs(candidate - desired_start)
+        if best_start is None or dist < best_dist or (dist == best_dist and candidate > best_start):
+            best_start, best_dist = candidate, dist
+    return best_start if best_start is not None else desired_start
+
+
+def _resolve_overlap(desired_start: str, desired_end: str, day_start: str,
+                      siblings: list[PlaceBlock]) -> tuple[str, str] | None:
+    """[desired_start,desired_end) 가 같은 날 siblings 와 겹치면, 겹치지 않는 가장 가까운
+    자리로 옮긴 (start, end) 를 반환. 안 겹치면 None(조정 불필요).
+
+    임계값 없음 — 하루가 꽉 차 있으면 마지막 블록 뒤(창 확장 대상)까지 밀려도 그대로 배치한다.
+    호출자가 이 결과로 timetable 끝을 늘려야 할 수도 있다(§5-8-3). 08_generate_itinerary_설계.md
+    §5 "겹침 회피 버림"은 generate_itinerary 빌더(배치 생성) 얘기 — 이건 그것과 별개인 단일
+    블록 편집(createBlock/updateBlock) 경로의 겹침 회피다. 일괄 이동(T5류)은 스코프 밖.
+    """
+    s, e = _to_min(desired_start), _to_min(desired_end)
+    duration = e - s
+    ranges = sorted((_to_min(b.block_start_time), _to_min(b.block_end_time)) for b in siblings)
+    if not any(_overlaps(s, e, bs, be) for bs, be in ranges):
+        return None
+    new_start = _nearest_fit(s, duration, _gaps(_to_min(day_start), ranges))
+    if new_start == s:
+        # 방어적 가드 — 겹침은 감지됐는데 재배치 결과가 원래 자리와 같으면(관측된 엣지 케이스,
+        # 08_통합_E2E_테스트_기록.md 발견#7 인접 증상: "20:30에서 20:30로 조정했어요"처럼
+        # 의미 없는 헤지가 나가는 걸 막는다) 조정 안 함으로 취급.
+        return None
+    return _from_min(new_start), _from_min(new_start + duration)
+
+
 def _resolve_target(target, blocks: list[PlaceBlock], notes: dict) -> PlaceBlock | None:
     if target.block_id is not None:
         for b in blocks:
@@ -187,23 +248,50 @@ def _normalize_ops(ops: list[Op], notes: dict) -> list[Op]:
     return out
 
 
+def _batch_dates(ops: list[Op]) -> set[str]:
+    """이 턴에 같은 날짜를 2번 이상 건드리는(=배치) 날짜들. 겹침 자동회피(D11)는 스코프가
+    단일 블록 편집(createBlock/updateBlock 각 1건)이지 배치가 아니다(설계 §5-8-1) — 배치인
+    날짜는 여기서 걸러 회피 로직을 끈다. 안 그러면 순차 처리 중 겹침→재배치→다음 op 와
+    또 겹침이 도미노로 이어져 여러 블록이 자정 근처로 쓸려가는 사고가 난다(실측: T1
+    "1일차랑 2일차 순서 바꿔줘", 08_통합_E2E_테스트_기록.md 발견#8).
+    """
+    counts: dict[str, int] = {}
+    for op in ops:
+        d = None
+        if op.op == "createBlock" and op.date:
+            d = op.date
+        elif op.op == "updateBlock" and (op.block_start_time or op.block_end_time or op.date):
+            d = op.date or (op.target.date if op.target else None)
+        if d:
+            counts[d] = counts.get(d, 0) + 1
+    return {d for d, c in counts.items() if c > 1}
+
+
 def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
-              notes: dict, gen_cache: dict[str, dict]) -> None:
+              notes: dict, gen_cache: dict[str, dict], batch_dates: set[str]) -> None:
     kind = op.op
 
     if kind == "createBlock":
         if not (op.place_id and op.date and op.block_start_time and op.block_end_time and op.block_category):
             return _drop(notes, f"createBlock: 필수 필드 누락 {op.model_dump(exclude_none=True)}")
-        if any(b.date == op.date and b.block_start_time == op.block_start_time for b in blocks):
-            # 그 슬롯 이미 점유 — v2 (date, blockStartTime) 유니크. 추론 안 함 → drop (10 §3)
-            return _drop(notes, f"createBlock: ({op.date}, {op.block_start_time}) 이미 블록 있음 — 무시")
         h = hydrate_places([op.place_id]).get(op.place_id)
         if not h:
             return _drop(notes, f"createBlock: contentId {op.place_id} 캐시에 없음")
         cat = CTYPE_TO_CATEGORY.get(h["place_content_type_id"], op.block_category)
+        start, end = op.block_start_time, op.block_end_time
+        tt = next((t for t in timetables if t.date == op.date), None)
+        siblings = [b for b in blocks if b.date == op.date]
+        resolved = (None if op.date in batch_dates else
+                    _resolve_overlap(start, end, tt.time_table_start_time if tt else "00:00", siblings))
+        if resolved:
+            start, end = resolved
+            if tt is not None and _to_min(end) > _to_min(tt.time_table_end_time):
+                tt.time_table_end_time = end
+            notes.setdefault("overlap_adjusted", []).append(
+                f"'{h['place_name']}' 일정이 기존 일정과 겹쳐 {op.block_start_time}에서 {start}로 조정했어요.")
         blocks.append(PlaceBlock(
             block_id=None, date=op.date,
-            block_start_time=op.block_start_time, block_end_time=op.block_end_time,
+            block_start_time=start, block_end_time=end,
             block_category=cat, place_id=op.place_id,
             place_name=h["place_name"], place_address=h["place_address"],
             place_content_type_id=h["place_content_type_id"],
@@ -237,6 +325,8 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
             b.longitude = h["longitude"]
             b.block_category = CTYPE_TO_CATEGORY.get(h["place_content_type_id"], b.block_category)
             cat_from_place = True   # content_type 역유도(C-6) 가 우선 — 아래 op.block_category 로 안 덮음
+        time_or_date_changed = bool(op.block_start_time or op.block_end_time or op.date)
+        original_start = b.block_start_time
         if op.block_start_time:
             b.block_start_time = op.block_start_time
         if op.block_end_time:
@@ -244,6 +334,17 @@ def _apply_op(op: Op, blocks: list[PlaceBlock], timetables: list[Timetable],
         if op.date:
             b.date = op.date
             b.time_table_id = None   # 다른 날 → v2 가 date 로 재연결
+        if time_or_date_changed and b.date not in batch_dates:
+            tt = next((t for t in timetables if t.date == b.date), None)
+            siblings = [x for x in blocks if x.date == b.date and x is not b]
+            resolved = _resolve_overlap(b.block_start_time, b.block_end_time,
+                                         tt.time_table_start_time if tt else "00:00", siblings)
+            if resolved:
+                b.block_start_time, b.block_end_time = resolved
+                if tt is not None and _to_min(b.block_end_time) > _to_min(tt.time_table_end_time):
+                    tt.time_table_end_time = b.block_end_time
+                notes.setdefault("overlap_adjusted", []).append(
+                    f"'{b.place_name}' 일정이 기존 일정과 겹쳐 {original_start}에서 {b.block_start_time}로 조정했어요.")
         if op.block_category and not cat_from_place:
             b.block_category = op.block_category
 
@@ -408,8 +509,16 @@ def assemble(
         _log_notes(notes)
         return ChatbotResponse(user_message=llm.user_message, plan=None, shown_places=shown)
 
-    for op in _normalize_ops(llm.actions, notes):
-        _apply_op(op, blocks, timetables, notes, gen_itin_cache)
+    normalized_ops = _normalize_ops(llm.actions, notes)
+    batch_dates = _batch_dates(normalized_ops)
+    for op in normalized_ops:
+        _apply_op(op, blocks, timetables, notes, gen_itin_cache, batch_dates)
+
+    # 겹침 자동 회피(§5-8-1) 안내 — LLM 최종 출력 이후에 조립 레이어가 결정하는 일이라
+    # LLM 은 이걸 모른다. userMessage 에 직접 덧붙인다(새 wire 필드 없음).
+    message = llm.user_message
+    if notes.get("overlap_adjusted"):
+        message = (message.rstrip() + " " + " ".join(notes["overlap_adjusted"])).strip()
 
     plan = PlanState(
         plan_frame=target.plan_frame.model_copy(deep=True),
@@ -417,7 +526,7 @@ def assemble(
         place_blocks=blocks,
     )
     _log_notes(notes)
-    return ChatbotResponse(user_message=llm.user_message, plan=plan, shown_places=shown)
+    return ChatbotResponse(user_message=message, plan=plan, shown_places=shown)
 
 
 def _log_notes(notes: dict) -> None:

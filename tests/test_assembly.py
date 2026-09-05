@@ -4,10 +4,12 @@ Gemini 불필요. hydrate 는 로컬 부산 DB.
 content_id: 1018702(관광 12) 1128306(식당 39) 1162526(숙박 32) 1046349(관광 12)
 """
 
+from unittest.mock import patch
+
 import pytest
 
 from app.models import ChatbotRequest, LlmOutput
-from app.services.assembly import assemble
+from app.services.assembly import _resolve_overlap, assemble
 
 ATTR_A = "1018702"
 ATTR_B = "1046349"
@@ -35,9 +37,9 @@ def _req(place_blocks=None, pending=None, shown=None, message="테스트"):
     return ChatbotRequest.model_validate(payload)
 
 
-def _block(bid, tt, start, cat, pid, memo=None):
+def _block(bid, tt, start, cat, pid, memo=None, end="23:59:00"):
     return {"blockId": bid, "timeTableId": tt, "placeId": pid, "placeName": f"blk{bid}",
-            "blockStartTime": start, "blockEndTime": "23:59:00", "blockCategory": cat, "memo": memo}
+            "blockStartTime": start, "blockEndTime": end, "blockCategory": cat, "memo": memo}
 
 
 # ── 기본: actions 없으면 plan=None ──────────────────────────────────────────
@@ -92,17 +94,137 @@ def test_update_block_category_from_content_type_not_llm(db):
     assert resp.plan.place_blocks[0].block_category == "ATTRACTION"
 
 
-# ── #8b: 점유 슬롯에 createBlock → drop, 원본 유지 ─────────────────────────
-def test_create_block_on_occupied_slot_dropped(db):
-    blocks = [_block(811, 41, "12:00:00", "RESTAURANT", FOOD, memo="원본")]
+# ── #8b(갱신, 겹침 자동 회피 도입 후): 점유 슬롯에 createBlock → drop 아니라
+#    가장 가까운 빈 자리로 재배치 + userMessage 헤지. 기존 블록은 안 건드림. ─────
+def test_create_block_on_occupied_slot_relocated(db):
+    blocks = [_block(811, 41, "12:00:00", "RESTAURANT", FOOD, memo="원본")]  # 12:00~23:59(헬퍼 기본)
     out = LlmOutput.model_validate({
         "userMessage": "추가", "shownPlaceIds": [],
         "actions": [{"op": "createBlock", "date": "2026-10-11", "blockStartTime": "12:00:00",
                      "blockEndTime": "13:00:00", "blockCategory": "ATTRACTION", "placeId": ATTR_A}],
     })
     resp = assemble(out, _req(place_blocks=blocks))
-    slot = [b for b in resp.plan.place_blocks if b.block_start_time == "12:00"]
-    assert len(slot) == 1 and slot[0].block_id == 811 and slot[0].memo == "원본"
+    original = [b for b in resp.plan.place_blocks if b.block_id == 811]
+    assert original[0].block_start_time == "12:00" and original[0].memo == "원본"   # 기존 블록 안 건드림
+
+    new_block = [b for b in resp.plan.place_blocks if b.place_id == ATTR_A]
+    assert len(new_block) == 1
+    # 09:00~12:00 이 유일한 빈 틈 → duration(1h) 만큼 그 틈 끝(11:00~12:00)에 붙는 게 가장 가까움
+    assert new_block[0].block_start_time == "11:00" and new_block[0].block_end_time == "12:00"
+    assert "겹쳐" in resp.user_message
+
+
+# ── 겹침 회피 — 두 블록 사이 좁은 틈에 정확히 들어맞는 경우 ────────────────
+def test_create_block_fits_between_existing_blocks(db):
+    blocks = [
+        _block(1, 41, "09:00:00", "RESTAURANT", FOOD, end="10:00:00"),
+        _block(2, 41, "11:00:00", "ATTRACTION", ATTR_B, end="13:00:00"),
+    ]
+    out = LlmOutput.model_validate({
+        "userMessage": "커피", "shownPlaceIds": [],
+        # 10:30~11:30 요청 — 1과 2 둘 다와 겹침. 유일하게 맞는 틈 = 10:00~11:00(1시간)
+        "actions": [{"op": "createBlock", "date": "2026-10-11", "blockStartTime": "10:30:00",
+                     "blockEndTime": "11:30:00", "blockCategory": "RESTAURANT", "placeId": LODGE}],
+    })
+    resp = assemble(out, _req(place_blocks=blocks))
+    new_block = [b for b in resp.plan.place_blocks if b.place_id == LODGE][0]
+    assert new_block.block_start_time == "10:00" and new_block.block_end_time == "11:00"
+
+
+# ── 겹침 회피 — 하루가 꽉 차 있으면 창을 늘려서라도 맨 끝에 배치(임계값 없음) ──
+def test_create_block_extends_timetable_window_when_day_is_full(db):
+    blocks = [_block(1, 41, "09:00:00", "RESTAURANT", FOOD, end="19:00:00")]  # 하루 거의 꽉 참(창 09~20)
+    out = LlmOutput.model_validate({
+        "userMessage": "저녁", "shownPlaceIds": [],
+        "actions": [{"op": "createBlock", "date": "2026-10-11", "blockStartTime": "12:00:00",
+                     "blockEndTime": "14:00:00", "blockCategory": "RESTAURANT", "placeId": ATTR_A}],
+    })
+    resp = assemble(out, _req(place_blocks=blocks))
+    new_block = [b for b in resp.plan.place_blocks if b.place_id == ATTR_A][0]
+    assert new_block.block_start_time == "19:00" and new_block.block_end_time == "21:00"
+    tt = next(t for t in resp.plan.timetables if t.date == "2026-10-11")
+    assert tt.time_table_end_time == "21:00"   # 창이 21:00 까지 늘어남
+
+
+# ── 겹침 회피 — updateBlock 으로 시각을 옮겼는데 다른 블록과 겹치면 재배치 ────
+def test_update_block_time_change_relocated_on_overlap(db):
+    blocks = [
+        _block(811, 41, "12:00:00", "RESTAURANT", FOOD, end="13:00:00"),
+        _block(812, 41, "18:00:00", "ATTRACTION", ATTR_B, end="19:00:00", memo="유지될 메모"),
+    ]
+    out = LlmOutput.model_validate({
+        "userMessage": "당겨줘", "shownPlaceIds": [],
+        # 812(1시간짜리)를 12:30~13:30 으로 당김 — 811(12:00~13:00)과 겹침
+        "actions": [{"op": "updateBlock", "target": {"blockId": 812},
+                     "blockStartTime": "12:30:00", "blockEndTime": "13:30:00"}],
+    })
+    resp = assemble(out, _req(place_blocks=blocks))
+    b812 = next(b for b in resp.plan.place_blocks if b.block_id == 812)
+    assert b812.block_start_time == "13:00"   # 811 끝(13:00) 바로 뒤로 밀림
+    assert b812.block_end_time == "14:00"     # 원래 1시간 duration 유지
+    assert b812.memo == "유지될 메모"          # 나머지 필드 보존
+    assert "겹쳐" in resp.user_message
+
+
+# ── 안 겹치면 조정 없음(회귀 방지) ──────────────────────────────────────────
+def test_create_block_no_overlap_untouched(db):
+    blocks = [_block(1, 41, "09:00:00", "RESTAURANT", FOOD, end="10:00:00")]
+    out = LlmOutput.model_validate({
+        "userMessage": "추가", "shownPlaceIds": [],
+        "actions": [{"op": "createBlock", "date": "2026-10-11", "blockStartTime": "14:00:00",
+                     "blockEndTime": "15:00:00", "blockCategory": "ATTRACTION", "placeId": ATTR_A}],
+    })
+    resp = assemble(out, _req(place_blocks=blocks))
+    new_block = [b for b in resp.plan.place_blocks if b.place_id == ATTR_A][0]
+    assert new_block.block_start_time == "14:00" and new_block.block_end_time == "15:00"
+    assert "겹쳐" not in resp.user_message
+
+
+# ── 겹침 회피 방어 가드 — 재배치 결과가 원래 자리와 같으면 조정 안 함 취급 ────
+# 실서버에서 "'OO' 일정이 기존 일정과 겹쳐 20:30에서 20:30로 조정했어요" 처럼 의미 없는
+# 헤지가 나간 걸 발견(08_통합_E2E_테스트_기록.md 발견#7 인접 증상). _nearest_fit 이 desired와
+# 같은 지점을 돌려주는 경우, _resolve_overlap 은 조정 없음(None)으로 취급해야 한다.
+class _FakeBlock:
+    def __init__(self, start, end):
+        self.block_start_time = start
+        self.block_end_time = end
+
+
+def test_resolve_overlap_noop_guard_when_relocation_equals_desired():
+    siblings = [_FakeBlock("12:00", "13:00")]   # 겹침이 감지되도록(원인은 몰라도 재현만)
+    with patch("app.services.assembly._nearest_fit", return_value=_to_min_helper("12:30")):
+        result = _resolve_overlap("12:30", "13:30", "09:00", siblings)
+    assert result is None
+
+
+def _to_min_helper(hms: str) -> int:
+    h, m = hms.split(":")
+    return int(h) * 60 + int(m)
+
+
+# ── 배치(여러 블록이 같은 날짜를 동시에 겨냥) 겹침 회피 끔 — 도미노 사고 방지 ────
+# 실서버 T1("1일차랑 2일차 순서 바꿔줘")에서 8개 블록이 전부 updateBlock{date=...}로 같은
+# 날짜를 동시에 겨냥 → 순차 처리 중 겹침→재배치→다음 op 와 또 겹침이 도미노로 이어져
+# 여러 블록이 23:59 로 쓸려가는 사고가 실측됨(08_통합_E2E_테스트_기록.md 발견#8).
+# D11 스코프는 단일 블록 편집이지 배치가 아니므로, 같은 날짜를 2번 이상 겨냥하면 꺼야 한다.
+def test_batch_date_move_skips_overlap_avoidance(db):
+    blocks = [
+        _block(1, 41, "09:00:00", "RESTAURANT", FOOD, end="10:00:00"),    # 1일차
+        _block(2, 41, "11:00:00", "ATTRACTION", ATTR_A, end="13:00:00"),  # 1일차
+        _block(3, 42, "09:00:00", "RESTAURANT", FOOD, end="10:00:00"),    # 2일차 — 블록1 이동 도착지와 겹침
+    ]
+    out = LlmOutput.model_validate({
+        "userMessage": "1일차를 2일차로 옮겼어요", "shownPlaceIds": [],
+        "actions": [
+            {"op": "updateBlock", "target": {"blockId": 1}, "date": "2026-10-12"},
+            {"op": "updateBlock", "target": {"blockId": 2}, "date": "2026-10-12"},
+        ],
+    })
+    resp = assemble(out, _req(place_blocks=blocks))
+    b1 = next(b for b in resp.plan.place_blocks if b.block_id == 1)
+    # 배치로 잡혀 회피가 꺼졌으므로 블록3(09:00-10:00)과 겹쳐도 원래 시각 그대로 이동
+    assert b1.date == "2026-10-12" and b1.block_start_time == "09:00"
+    assert "겹쳐" not in resp.user_message
 
 
 # ── E5-1: target 만 있고 바꿀 필드 없는 updateBlock → drop (no-op 방지) ────
