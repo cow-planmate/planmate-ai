@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+psycopg[binary,pool]
+pgvector
+pydantic-settings
+google-genai
+google-auth        # Vertex ADC — routes.py / conftest.py 가 직접 import (google-genai 전이 의존이지만 명시)
+tenacity
