@@ -35,10 +35,12 @@ jobs:
 
       # AI_DB_DSN 은 필수 설정값이라 없으면 import 단계에서 죽는다. DB 필요 테스트는
       # conftest.py 의 db 픽스처가 접속 실패 시 자동 skip 하므로 실제 DB는 필요 없다.
+      # `pytest` 단독 실행은 repo root 를 sys.path 에 안 넣는다(pytest.ini 등 config 파일이
+      # 없어서). `python -m pytest` 로 실행해야 `import app` 이 풀린다.
       - name: Test
         env:
           AI_DB_DSN: postgresql://test:test@localhost:5432/test
-        run: pytest
+        run: python -m pytest
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
