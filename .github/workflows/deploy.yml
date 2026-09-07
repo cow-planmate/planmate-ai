@@ -1,0 +1,70 @@
+name: Build & Push (Docker Hub)
+
+# main / test 에 push 되면 이미지를 빌드해 Docker Hub 로 push 한다.
+#   main → :latest  (운영 경로 — 아직 planmatetest 외 컷오버 없음)
+#   test → :test    (테스트 서버 planmatetest 전용)
+# 테스트 서버(planmatetest)의 Watchtower 가 :test 를 추종한다.
+# ArgoCD/deploy 레포 연동 없음 — Ai 는 아직 k3s 편입 범위 밖 (compose 전용).
+# (Backend-v2/Gateway/Community/Notification 의 deploy.yml 을 미러링)
+
+on:
+  push:
+    branches: [main, test]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: docker.io/cycle123/planmate-ai
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # AI_DB_DSN 은 필수 설정값이라 없으면 import 단계에서 죽는다. DB 필요 테스트는
+      # conftest.py 의 db 픽스처가 접속 실패 시 자동 skip 하므로 실제 DB는 필요 없다.
+      - name: Test
+        env:
+          AI_DB_DSN: postgresql://test:test@localhost:5432/test
+        run: pytest
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata (tags)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=test,enable=${{ github.ref == 'refs/heads/test' }}
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
