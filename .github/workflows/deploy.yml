@@ -1,10 +1,11 @@
 name: Build & Push (Docker Hub)
 
 # main / test 에 push 되면 이미지를 빌드해 Docker Hub 로 push 한다.
-#   main → :latest  (운영 경로 — 아직 planmatetest 외 컷오버 없음)
-#   test → :test    (테스트 서버 planmatetest 전용)
+#   main → :latest + deploy 레포 태그 커밋  (운영 k3s — ArgoCD 가 동기화한다)
+#   test → :test                              (테스트 서버 planmatetest 전용)
 # 테스트 서버(planmatetest)의 Watchtower 가 :test 를 추종한다.
-# ArgoCD/deploy 레포 연동 없음 — Ai 는 아직 k3s 편입 범위 밖 (compose 전용).
+# 운영은 Watchtower 가 아니라 deploy 레포 kustomization.yaml 의 sha 태그가 진실이다
+# — 무엇이 돌고 있는지 git 이 알고, git revert 가 곧 롤백이 된다.
 # (Backend-v2/Gateway/Community/Notification 의 deploy.yml 을 미러링)
 
 on:
@@ -70,3 +71,38 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 운영(k3s) 반영. main 에서만 돈다 — test 푸시는 planmatetest 로만 나가야 한다.
+      # cow-planmate/deploy 의 kustomization.yaml 에서 이 서비스의 newTag 한 줄을 바꾼다.
+      # 필요한 것: 레포 Secret DEPLOY_REPO_SSH_KEY (같은 이름의 조직 Secret 은 워크플로에
+      # 빈 값으로 전달된다 — Permission denied (publickey) 가 나면 먼저 이걸 본다).
+      - name: Bump image tag in deploy repo
+        if: github.ref == 'refs/heads/main'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_REPO_SSH_KEY }}
+          SERVICE: planmate-ai
+        run: |
+          set -euo pipefail
+          TAG="sha-$(echo "${GITHUB_SHA}" | cut -c1-7)"
+
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+
+          git clone --depth 1 git@github.com:cow-planmate/deploy.git /tmp/deploy
+          cd /tmp/deploy
+
+          before=$(grep -c "name: cycle123/${SERVICE}$" kustomization.yaml)
+          [ "$before" = "1" ] || { echo "kustomization.yaml 에서 ${SERVICE} 를 정확히 1개 찾지 못했다 (${before}개)"; exit 1; }
+          sed -i "\|name: cycle123/${SERVICE}\$|{n;s|newTag: .*|newTag: ${TAG}|}" kustomization.yaml
+
+          if git diff --quiet; then
+            echo "태그가 이미 ${TAG} 다 — 커밋할 것이 없다."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(${SERVICE}): ${TAG}"
+          # 여러 레포가 동시에 머지되면 push 가 부딪힌다. 한 번 rebase 하고 다시 민다.
+          git push || { git pull --rebase && git push; }
