@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY migrations ./migrations
+COPY jobs ./jobs
 COPY main.py ./
 
 RUN chown -R app:app /app
