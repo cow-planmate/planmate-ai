@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from google.genai import types
 
+from app.data import region_index, region_index_client
 from app.data.codes import SUBTYPE_VOCAB
 from app.services import candidates, itinerary
 
@@ -39,7 +40,9 @@ SEARCH_PLACES = types.FunctionDeclaration(
             ),
             "region": types.Schema(
                 type=types.Type.STRING,
-                description="지역명(예: '부산', '부산 해운대'). 문장에서 추출. 일정 생성 흐름에선 비워둔다(자동 주입).",
+                description="지역명(예: '부산', '여수', '전남 여수'). 문장에서 추출. 시도·시군 이름만 넣고 "
+                            "'강릉역'·'해운대해수욕장' 같은 기준점은 near 에 넣는다. "
+                            "플랜 목적지 안에서 찾을 땐·일정 생성 흐름에선 비워둔다(자동 주입).",
             ),
             "subtype": types.Schema(
                 type=types.Type.STRING,
@@ -141,6 +144,8 @@ GEMINI_TOOLS = types.Tool(function_declarations=[SEARCH_PLACES, GENERATE_ITINERA
 class ToolContext:
     region: list[str] = field(default_factory=list)      # userContext.regionCodes → 코드
     signgu: list[str] = field(default_factory=list)
+    destination_id: int | None = None                    # 플랜 목적지 — 겹치는 지역명 좁히기(`22` §6-2-1)
+    region_index_version: str | None = None              # None = 구버전 v2 → 채팅 지역명은 regions.py
     exclude_ids: list[str] = field(default_factory=list)  # 누적
     seed: str = ""
     search_cache: dict[str, dict] = field(default_factory=dict)   # content_id -> 전체 레코드
@@ -162,12 +167,40 @@ def _abridge_place(p: dict) -> dict:
     return {k: v for k, v in p.items() if k not in _DROP_FROM_PLACE}
 
 
+def _scope_for(region_arg, ctx: ToolContext) -> tuple[list[str] | str | None, list[str] | None, dict | None]:
+    """search_places 의 (region, signgu) 범위. 세 번째 값이 있으면 검색하지 않고 그 notes 로 끝낸다.
+
+    - region 인자 없음 → 플랜 목적지 코드(userContext) 그대로 (경로 A, 기존 동작).
+    - region 인자 있음 + 구버전 v2(버전 없음) → 기존 regions.py 해석 + 목적지 signgu (기존 동작 유지).
+    - region 인자 있음 + v2 지역 색인 → 노드 해석. 목적지 signgu 를 덧씌우지 않는다(`22` §6-3).
+    """
+    if not region_arg:
+        return (ctx.region or None), (ctx.signgu or None), None
+    if ctx.region_index_version is None or not isinstance(region_arg, str):
+        return region_arg, (ctx.signgu or None), None
+
+    index = region_index_client.store.get()
+    if index is None:
+        return None, None, {"region": "index_unavailable"}
+    res = region_index.resolve(region_arg, index, ctx.destination_id)
+    if res.node is None:
+        notes: dict = {"region": res.note}
+        if res.candidates:
+            notes["candidates"] = list(res.candidates)
+        return None, None, notes
+    regns, signgus = region_index.scope_of(res.node)
+    return regns, (signgus or None), None
+
+
 def _search_places(args: dict, ctx: ToolContext) -> dict:
+    region, signgu, early_notes = _scope_for(args.get("region"), ctx)
+    if early_notes is not None:
+        return {"places": [], "total": 0, "notes": early_notes}
     res = candidates.search_places(
         name=args.get("name"),
         category=args.get("category"),
-        region=args.get("region") or (ctx.region or None),
-        signgu=ctx.signgu or None,
+        region=region,
+        signgu=signgu,
         subtype=args.get("subtype"),
         amenities=args.get("amenities"),
         query=args.get("query"),
