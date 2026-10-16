@@ -25,5 +25,13 @@ class Settings(BaseSettings):
     #   function = submit_plan 함수호출 (9/9, SUBMIT_PLAN 미러 유지비용). schema/function 은 폴백 스위치.
     final_output_mode: str = "json"
 
+    # v2 지역 색인 gRPC (`22` §5-3·§6-1). 전부 선택 설정 — 비어 있어도 앱은 뜨고,
+    # 색인을 못 받으면 채팅 지역명 해석만 index_unavailable 로 실패한다.
+    # 토큰은 AI 전용(INTERNAL_AI_TOKEN) — v2 는 이 토큰에 RegionIndexService 만 허용한다.
+    v2_grpc_addr: str = "planmate-app:9090"
+    internal_ai_token: str = ""
+    region_index_deadline_s: float = 3.0       # 잠정 — 실측 후 확정
+    region_index_min_refresh_s: float = 30.0   # 재조회 하한 (`22` §11-3 확정)
+
 
 settings = Settings()
