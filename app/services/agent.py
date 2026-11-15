@@ -20,6 +20,7 @@ import time
 from google.genai import types
 
 from app.config import settings
+from app.data import region_index_client
 from app.models import ChatbotRequest, ChatbotResponse, LlmOutput
 from app.prompts import SYSTEM, build_context
 from app.services import gemini
@@ -109,9 +110,14 @@ def _fn_calls(resp) -> list:
 
 
 def run(req: ChatbotRequest) -> ChatbotResponse:
+    # 요청이 가져온 지역 색인 버전과 캐시가 다르면 v2 에서 다시 받는다(하한 간격 안에서는 생략).
+    # 실패해도 예외를 내지 않는다 — 채팅 지역명 해석만 index_unavailable 이 된다(`22` §6-1).
+    region_index_client.store.sync(req.user_context.region_index_version)
     ctx = ToolContext(
         region=[rc.ldong_regn_cd for rc in req.user_context.region_codes],
         signgu=list(req.user_context.signgu_codes),
+        destination_id=req.plan_context.plan_frame.destination_id,
+        region_index_version=req.user_context.region_index_version,
         exclude_ids=_collect_exclude_ids(req),
         seed=_seed(),
     )

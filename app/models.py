@@ -101,6 +101,8 @@ class UserContext(BaseModel):
     preferred_themes: list[PreferredTheme] = Field(default_factory=list, alias="preferredThemes")
     region_codes: list[RegionCode] = Field(default_factory=list, alias="regionCodes")
     signgu_codes: list[str] = Field(default_factory=list, alias="signguCodes")
+    # v2 지역 색인 버전 (`22` §5-4). None = 구버전 v2 → 채팅 지역명은 기존 regions.py 로 해석
+    region_index_version: str | None = Field(default=None, alias="regionIndexVersion")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

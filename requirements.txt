@@ -6,3 +6,13 @@ pydantic-settings
 google-genai
 google-auth        # Vertex ADC — routes.py / conftest.py 가 직접 import (google-genai 전이 의존이지만 명시)
 tenacity
+
+# v2 지역 색인 gRPC 클라이언트 (`22` §5-5). BSR 생성 SDK 는 세 패키지 모두 같은 모듈 커밋으로 고정하고,
+# 런타임(grpcio·protobuf)도 고정한다 — 플러그인 버전이 런타임보다 높으면 import 가 실패한다.
+# 모듈 커밋은 Backend-v2 등 Gradle 소비자의 protoCommit 과 같은 값이어야 한다(proto/scripts/check-consumer-sync.sh).
+--extra-index-url https://buf.build/gen/python
+grpcio==1.83.1
+protobuf==7.36.1
+planmate-proto-protocolbuffers-python==36.1.0.1.20261016121932+25b4ebf280e6
+planmate-proto-protocolbuffers-pyi==36.1.0.1.20261016121932+25b4ebf280e6
+planmate-proto-grpc-python==1.83.1.1.20261016121932+25b4ebf280e6
